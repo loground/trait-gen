@@ -242,6 +242,15 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.trait-rename-input {
+  min-width: 0;
+  width: 130px;
+  height: 32px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .trait-actions {
   display: inline-flex;
   align-items: center;
@@ -317,7 +326,7 @@ button:disabled {
 }
 
 .trait-editor-modal {
-  width: min(1200px, 100%);
+  width: min(980px, 100%);
   max-height: min(820px, calc(100svh - 48px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -343,7 +352,7 @@ button:disabled {
 .rule-manager-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   overflow: auto;
 }
 
@@ -354,7 +363,15 @@ button:disabled {
 }
 
 .rule-manager-section + .rule-manager-section {
+  border-left: 0;
+}
+
+.rule-manager-section:nth-child(even) {
   border-left: 1px solid #d8dee8;
+}
+
+.rule-manager-section:nth-child(n + 3) {
+  border-top: 1px solid #d8dee8;
 }
 
 .rule-manager-section > p {
@@ -556,6 +573,10 @@ button:disabled {
   align-items: start;
 }
 
+.position-rule-row span {
+  line-height: 1.5;
+}
+
 .rule-visuals {
   min-width: 0;
   display: grid;
@@ -647,10 +668,31 @@ button:disabled {
   padding: 0;
 }
 
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modal-header .modal-rarity-action {
+  width: auto;
+  min-width: 0;
+  height: 38px;
+  padding: 0 13px;
+  background: #0d6b67;
+  border-color: #0d6b67;
+  color: #ffffff;
+}
+
+.modal-header .modal-rarity-action:hover {
+  background: #095b57;
+  border-color: #095b57;
+}
+
 .trait-editor-workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 210px minmax(260px, 1fr) minmax(340px, 410px);
+  grid-template-columns: 200px minmax(260px, 320px) minmax(380px, 1fr);
 }
 
 .trait-editor-nav {
@@ -766,10 +808,39 @@ button:disabled {
   font-size: 18px;
 }
 
-.trait-editor-list-header > span {
+.selected-folder-controls {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.selected-folder-controls > span {
   color: #607188;
   font-size: 12px;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+.folder-none-chance {
+  min-width: 112px;
+  margin: 0;
+  color: #45576c;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.folder-none-chance .input-with-suffix {
+  margin-top: 4px;
+  border-color: #7ab6b0;
+  box-shadow: 0 0 0 2px rgba(13, 107, 103, 0.08);
+}
+
+.folder-none-chance input {
+  height: 32px;
+  padding: 6px 8px;
+  font-size: 13px;
 }
 
 .trait-editor-list-scroll {
@@ -783,11 +854,11 @@ button:disabled {
 
 .trait-editor-list-item {
   min-width: 0;
-  min-height: 54px;
+  min-height: 46px;
   display: grid;
   justify-items: start;
   gap: 3px;
-  padding: 9px 11px;
+  padding: 7px 10px;
   text-align: left;
 }
 
@@ -1199,6 +1270,30 @@ input[type='range'] {
   }
 }
 
+@media (max-width: 900px) {
+  .trait-editor-workspace {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .trait-editor-nav {
+    grid-template-rows: auto 160px auto;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid #d8dee8;
+  }
+
+  .trait-editor-list {
+    min-height: 320px;
+    border-right: 0;
+    border-bottom: 1px solid #d8dee8;
+  }
+
+  .trait-editor-inspector {
+    overflow: visible;
+  }
+}
+
 @media (max-width: 720px) {
   .topbar {
     align-items: flex-start;
@@ -1220,11 +1315,6 @@ input[type='range'] {
     grid-template-columns: 1fr;
   }
 
-  .trait-editor-workspace {
-    grid-template-columns: 1fr;
-    overflow-y: auto;
-  }
-
   .modal-backdrop {
     padding: 10px;
   }
@@ -1237,20 +1327,12 @@ input[type='range'] {
     max-height: calc(100svh - 20px);
   }
 
-  .trait-editor-nav {
-    grid-template-rows: auto 160px auto;
-    max-height: none;
-    border-right: 0;
-    border-bottom: 1px solid #d8dee8;
+  .modal-header {
+    padding: 14px;
   }
 
-  .trait-editor-list {
-    min-height: 320px;
-    border-right: 0;
-    border-bottom: 1px solid #d8dee8;
-  }
-
-  .trait-editor-inspector {
-    overflow: visible;
+  .modal-header .modal-rarity-action {
+    padding: 0 10px;
+    font-size: 11px;
   }
 }

@@ -50,6 +50,8 @@ const DEFAULT_PROJECT = {
 }
 
 const emptyRuleDraft = { first: '', second: '' }
+const emptyRuleFolderDraft = { first: '', second: '' }
+const emptyPositionRuleDraft = { first: '', second: '', firstX: 0, firstY: 0, secondX: 0, secondY: 0 }
 const emptyConditionDraft = { category: '', requiredTrait: '' }
 const emptyFolderConflictDraft = { first: '', second: '' }
 
@@ -65,11 +67,16 @@ function App() {
   const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
+  const [renderOrderRename, setRenderOrderRename] = useState(null)
   const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
   const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
+  const [positionPairPreviewUrl, setPositionPairPreviewUrl] = useState('')
   const [traitEditorPreviewUrl, setTraitEditorPreviewUrl] = useState('')
   const [activeDropTarget, setActiveDropTarget] = useState('')
   const [ruleDraft, setRuleDraft] = useState(emptyRuleDraft)
+  const [ruleFolderDraft, setRuleFolderDraft] = useState(emptyRuleFolderDraft)
+  const [positionRuleDraft, setPositionRuleDraft] = useState(emptyPositionRuleDraft)
+  const [positionRuleFolderDraft, setPositionRuleFolderDraft] = useState(emptyRuleFolderDraft)
   const [conditionDraft, setConditionDraft] = useState(emptyConditionDraft)
   const [folderConflictDraft, setFolderConflictDraft] = useState(emptyFolderConflictDraft)
   const psdInputRef = useRef(null)
@@ -81,6 +88,7 @@ function App() {
   const managerPreviewUrlsRef = useRef({})
   const managerPreviewSignaturesRef = useRef({})
   const managerPairPreviewUrlRef = useRef('')
+  const positionPairPreviewUrlRef = useRef('')
   const traitEditorPreviewUrlRef = useRef('')
   const traitPreviewDragRef = useRef(null)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
@@ -128,12 +136,15 @@ function App() {
       ...new Set([
         ruleDraft.first,
         ruleDraft.second,
+        positionRuleDraft.first,
+        positionRuleDraft.second,
         conditionDraft.requiredTrait,
         ...(source?.incompatibilities || []).flatMap((rule) => [rule.first, rule.second]),
+        ...(source?.positionRules || []).flatMap((rule) => [rule.first, rule.second]),
         ...(source?.categoryRequirements || []).map((rule) => rule.requiredTrait),
       ].filter(Boolean)),
     ],
-    [ruleDraft.first, ruleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.categoryRequirements],
+    [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements],
   )
 
   useEffect(
@@ -142,6 +153,7 @@ function App() {
       previewRequestRef.current += 1
       Object.values(managerPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url))
       if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
+      if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
       if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
     },
     [],
@@ -238,6 +250,45 @@ function App() {
   useEffect(() => {
     let cancelled = false
     let timer = null
+    const firstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
+    const secondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
+
+    if (!traitManagerOpen || !source || !firstTrait || !secondTrait) {
+      if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
+      positionPairPreviewUrlRef.current = ''
+      setPositionPairPreviewUrl('')
+      return undefined
+    }
+
+    timer = window.setTimeout(async () => {
+      try {
+        const positionedTraits = [
+          { ...firstTrait, offsetX: positionRuleDraft.firstX, offsetY: positionRuleDraft.firstY },
+          { ...secondTrait, offsetX: positionRuleDraft.secondX, offsetY: positionRuleDraft.secondY },
+        ]
+        const blob = await renderArtwork({ ...source, positionRules: [] }, positionedTraits, { renderMaxDimension: 360 })
+        const url = URL.createObjectURL(blob)
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
+        positionPairPreviewUrlRef.current = url
+        setPositionPairPreviewUrl(url)
+      } catch {
+        if (!cancelled) setPositionPairPreviewUrl('')
+      }
+    }, 120)
+
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [traitManagerOpen, source, positionRuleDraft])
+
+  useEffect(() => {
+    let cancelled = false
+    let timer = null
     const category = source?.categories?.[selectedCategoryIndex]
     const trait = category?.traits?.[selectedTraitIndex]
 
@@ -296,6 +347,10 @@ function App() {
       const parsed = parsePsd(psd, file.name)
       setSource(parsed)
       setSelectedCategoryIndex(0)
+      setRuleDraft(emptyRuleDraft)
+      setRuleFolderDraft(emptyRuleFolderDraft)
+      setPositionRuleDraft(emptyPositionRuleDraft)
+      setPositionRuleFolderDraft(emptyRuleFolderDraft)
       setStatus(`Loaded ${parsed.categories.length} categories from ${file.name}.`)
       await renderPreview(parsed)
     } catch (error) {
@@ -365,6 +420,10 @@ function App() {
       const parsed = await parseFolders(files, baseFileRef.current)
       setSource(parsed)
       setSelectedCategoryIndex(0)
+      setRuleDraft(emptyRuleDraft)
+      setRuleFolderDraft(emptyRuleFolderDraft)
+      setPositionRuleDraft(emptyPositionRuleDraft)
+      setPositionRuleFolderDraft(emptyRuleFolderDraft)
       setStatus(`Loaded ${parsed.categories.length} categories from folder upload.`)
       await renderPreview(parsed)
     } catch (error) {
@@ -528,6 +587,25 @@ function App() {
     await renderPreview(nextSource)
   }
 
+  function startRenderOrderRename(categoryIndex) {
+    if (!source || busy) return
+    setSelectedCategoryIndex(categoryIndex)
+    setRenderOrderRename({ categoryIndex, value: source.categories[categoryIndex]?.name || '' })
+  }
+
+  function finishRenderOrderRename() {
+    if (!renderOrderRename || !source) return
+    const { categoryIndex } = renderOrderRename
+    const currentName = source.categories[categoryIndex]?.name
+    const nextName = renderOrderRename.value.trim()
+    setRenderOrderRename(null)
+    if (!nextName) {
+      setStatus('Folder names cannot be empty.')
+      return
+    }
+    if (nextName !== currentName) renameCategory(categoryIndex, nextName)
+  }
+
   function renameTrait(categoryIndex, traitIndex, value) {
     if (!source || busy) return
     const categories = source.categories.map((category, index) => {
@@ -635,6 +713,7 @@ function App() {
     const nextSource = { ...source, incompatibilities: [...existingRules, { first, second }] }
     setSource(nextSource)
     setRuleDraft(emptyRuleDraft)
+    setRuleFolderDraft(emptyRuleFolderDraft)
     setStatus('Trait rule added.')
     await renderPreview(nextSource)
   }
@@ -647,6 +726,75 @@ function App() {
     }
     setSource(nextSource)
     setStatus('Trait rule removed.')
+    await renderPreview(nextSource)
+  }
+
+  function selectPositionRuleTrait(side, traitKey) {
+    const trait = source ? findTraitByKey(source, traitKey) : null
+    setPositionRuleDraft((current) => ({
+      ...current,
+      [side]: traitKey,
+      [`${side}X`]: trait ? getTraitOffset(trait, 'x') : 0,
+      [`${side}Y`]: trait ? getTraitOffset(trait, 'y') : 0,
+    }))
+  }
+
+  function updatePositionRuleOffset(side, axis, value) {
+    if (!source || busy) return
+    const numericValue = Number(value)
+    if (!Number.isFinite(numericValue)) return
+    const limit = Math.max(source.width, source.height) * 2
+    const offset = Math.round(Math.max(-limit, Math.min(limit, numericValue)))
+    setPositionRuleDraft((current) => ({ ...current, [`${side}${axis.toUpperCase()}`]: offset }))
+  }
+
+  async function addPositionRule() {
+    if (!source || busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second) return
+    const firstTrait = findTraitByKey(source, positionRuleDraft.first)
+    const secondTrait = findTraitByKey(source, positionRuleDraft.second)
+    if (!firstTrait || !secondTrait || firstTrait.category === secondTrait.category) {
+      setStatus('Position rules require traits from two different folders.')
+      return
+    }
+    let rule = {
+      first: positionRuleDraft.first,
+      second: positionRuleDraft.second,
+      firstOffsetX: positionRuleDraft.firstX,
+      firstOffsetY: positionRuleDraft.firstY,
+      secondOffsetX: positionRuleDraft.secondX,
+      secondOffsetY: positionRuleDraft.secondY,
+    }
+    if (rule.first.localeCompare(rule.second) > 0) {
+      rule = {
+        first: rule.second,
+        second: rule.first,
+        firstOffsetX: rule.secondOffsetX,
+        firstOffsetY: rule.secondOffsetY,
+        secondOffsetX: rule.firstOffsetX,
+        secondOffsetY: rule.firstOffsetY,
+      }
+    }
+    const existingRules = source.positionRules || []
+    if (existingRules.some((existingRule) => makeRuleKey(existingRule) === makeRuleKey(rule))) {
+      setStatus('That pair already has a position rule.')
+      return
+    }
+    const nextSource = { ...source, positionRules: [...existingRules, rule] }
+    setSource(nextSource)
+    setPositionRuleDraft(emptyPositionRuleDraft)
+    setPositionRuleFolderDraft(emptyRuleFolderDraft)
+    setStatus('Pair-specific position rule added.')
+    await renderPreview(nextSource)
+  }
+
+  async function removePositionRule(ruleIndex) {
+    if (!source || busy) return
+    const nextSource = {
+      ...source,
+      positionRules: (source.positionRules || []).filter((_, index) => index !== ruleIndex),
+    }
+    setSource(nextSource)
+    setStatus('Pair-specific position rule removed.')
     await renderPreview(nextSource)
   }
 
@@ -773,6 +921,7 @@ function App() {
             requestedEditions: targetCount,
             validatedEditions: combos.length,
             incompatibilityRules: rules.incompatibilities.length,
+            positionRules: (source.positionRules || []).length,
             categoryRequirements: rules.categoryRequirements.length,
             categoryConflicts: rules.categoryConflicts.length,
             validationPassed: true,
@@ -873,6 +1022,9 @@ function App() {
           setSource(restored.source)
           setSelectedCategoryIndex(0)
           setRuleDraft(emptyRuleDraft)
+          setRuleFolderDraft(emptyRuleFolderDraft)
+          setPositionRuleDraft(emptyPositionRuleDraft)
+          setPositionRuleFolderDraft(emptyRuleFolderDraft)
           setConditionDraft(emptyConditionDraft)
           setFolderConflictDraft(emptyFolderConflictDraft)
           await renderPreview(restored.source)
@@ -896,15 +1048,18 @@ function App() {
     setProject((current) => ({ ...current, count: maxEditions }))
   }
 
-  const traitOptions = source?.categories?.flatMap((category) =>
+  const traitOptionsByCategory = source?.categories?.map((category) =>
     category.traits.map((trait) => ({
       key: makeTraitKey(trait),
       label: `${category.name} / ${trait.name}`,
+      traitLabel: trait.name,
     })),
   ) || []
+  const traitOptions = traitOptionsByCategory.flat()
   const traitOptionMap = new Map(traitOptions.map((trait) => [trait.key, trait.label]))
 
   const incompatibilities = source?.incompatibilities || []
+  const positionRules = source?.positionRules || []
   const categoryRequirements = source?.categoryRequirements || []
   const categoryConflicts = source?.categoryConflicts || []
   const traitEditorCategory = selectedCategory || source?.categories?.[0] || null
@@ -985,10 +1140,26 @@ function App() {
             {sourceSummary.length ? (
               sourceSummary.map((item, index) => (
                 <div className={`trait-row ${item.enabled ? '' : 'disabled'} ${selectedCategoryIndex === index ? 'selected' : ''}`} key={`${item.name}-${index}`}>
-                  <button className="trait-select" type="button" onClick={() => setSelectedCategoryIndex(index)}>
-                    <span>{item.name}</span>
-                    {!item.enabled && <small>Excluded</small>}
-                  </button>
+                  {renderOrderRename?.categoryIndex === index ? (
+                    <input
+                      className="trait-rename-input"
+                      value={renderOrderRename.value}
+                      autoFocus
+                      aria-label={`Rename ${item.name}`}
+                      disabled={busy}
+                      onChange={(event) => setRenderOrderRename((current) => ({ ...current, value: event.target.value }))}
+                      onBlur={finishRenderOrderRename}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                        if (event.key === 'Escape') setRenderOrderRename(null)
+                      }}
+                    />
+                  ) : (
+                    <button className="trait-select" type="button" aria-label={`Rename ${item.name}`} onClick={() => startRenderOrderRename(index)}>
+                      <span title="Click to rename">{item.name}</span>
+                      {!item.enabled && <small>Excluded</small>}
+                    </button>
+                  )}
                   <div className="trait-actions">
                     <strong>{item.enabled ? item.count : 0}/{item.total}</strong>
                     <button type="button" aria-label={`Move ${item.name} earlier`} disabled={busy || index === 0} onClick={() => moveCategory(index, -1)}>
@@ -1026,11 +1197,6 @@ function App() {
                 <SlidersHorizontal size={16} />
                 Open trait editor
               </button>
-              <button className="rarity-action" type="button" disabled={busy} onClick={randomizeTraitRarities}>
-                <Shuffle size={16} />
-                Randomize rarities
-              </button>
-              <p className="chance-note">Analyzes the collection size and folder purpose, then assigns balanced percentages and smart No trait chances.</p>
             </div>
           )}
 
@@ -1041,9 +1207,20 @@ function App() {
                   <Ban size={15} />
                   Trait manager
                 </span>
-                <strong>{incompatibilities.length + categoryRequirements.length + categoryConflicts.length}</strong>
+                <strong>{incompatibilities.length + positionRules.length + categoryRequirements.length + categoryConflicts.length}</strong>
               </div>
-              <button className="primary-action" type="button" disabled={busy} onClick={() => setTraitManagerOpen(true)}>
+              <button
+                className="primary-action"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setRuleDraft(emptyRuleDraft)
+                  setRuleFolderDraft(emptyRuleFolderDraft)
+                  setPositionRuleDraft(emptyPositionRuleDraft)
+                  setPositionRuleFolderDraft(emptyRuleFolderDraft)
+                  setTraitManagerOpen(true)
+                }}
+              >
                 <Ban size={16} />
                 Open trait manager
               </button>
@@ -1170,9 +1347,15 @@ function App() {
                 <p className="eyebrow">Trait metadata</p>
                 <h2>Trait editor</h2>
               </div>
-              <button type="button" aria-label="Close trait editor" onClick={() => setTraitEditorOpen(false)}>
-                <X size={18} />
-              </button>
+              <div className="modal-header-actions">
+                <button className="modal-rarity-action" type="button" disabled={busy} onClick={randomizeTraitRarities}>
+                  <Shuffle size={16} />
+                  Randomize rarities
+                </button>
+                <button type="button" aria-label="Close trait editor" onClick={() => setTraitEditorOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
             </header>
             <div className="trait-editor-workspace">
               <nav className="trait-editor-nav" aria-label="Trait folders">
@@ -1203,21 +1386,6 @@ function App() {
                         onChange={(event) => renameCategory(traitEditorCategoryIndex, event.target.value)}
                       />
                     </label>
-                    <label>
-                      No trait chance
-                      <div className="input-with-suffix">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.1"
-                          value={traitEditorCategory.noneWeight ?? 0}
-                          disabled={busy || traitEditorCategory.enabled === false}
-                          onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
-                        />
-                        <span>%</span>
-                      </div>
-                    </label>
                   </div>
                 )}
               </nav>
@@ -1228,7 +1396,24 @@ function App() {
                     <p className="eyebrow">Selected folder</p>
                     <h3>{traitEditorCategory?.name}</h3>
                   </div>
-                  <span>{traitEditorCategory?.traits.length || 0} traits</span>
+                  <div className="selected-folder-controls">
+                    <span>{traitEditorCategory?.traits.length || 0} traits</span>
+                    <label className="folder-none-chance">
+                      No trait chance
+                      <div className="input-with-suffix">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                          value={traitEditorCategory?.noneWeight ?? 0}
+                          disabled={busy || traitEditorCategory?.enabled === false}
+                          onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
+                        />
+                        <span>%</span>
+                      </div>
+                    </label>
+                  </div>
                 </header>
                 <div className="trait-editor-list-scroll">
                   {traitEditorCategory?.traits.map((trait, traitIndex) => (
@@ -1239,7 +1424,7 @@ function App() {
                       onClick={() => setSelectedTraitIndex(traitIndex)}
                     >
                       <span>{getTraitMetadataName(trait)}</span>
-                      <small>{getTraitWeight(trait)}% · X {getTraitOffset(trait, 'x')} · Y {getTraitOffset(trait, 'y')}</small>
+                      <small>Rarity {getTraitWeight(trait)}% · Position X {getTraitOffset(trait, 'x')} · Position Y {getTraitOffset(trait, 'y')}</small>
                     </button>
                   ))}
                 </div>
@@ -1354,10 +1539,26 @@ function App() {
                 <p>Select two individual traits that must never appear together.</p>
                 <div className="trait-picker-field">
                   <label>
+                    Folder
+                    <select
+                      value={ruleFolderDraft.first}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setRuleFolderDraft((current) => ({ ...current, first: event.target.value }))
+                        setRuleDraft((current) => ({ ...current, first: '' }))
+                      }}
+                    >
+                      <option value="">Choose folder</option>
+                      {source.categories.map((category, categoryIndex) => (
+                        <option value={categoryIndex} key={`${category.name}-${categoryIndex}`}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
                     First trait
-                    <select value={ruleDraft.first} disabled={busy} onChange={(event) => setRuleDraft((current) => ({ ...current, first: event.target.value }))}>
+                    <select value={ruleDraft.first} disabled={busy || ruleFolderDraft.first === ''} onChange={(event) => setRuleDraft((current) => ({ ...current, first: event.target.value }))}>
                       <option value="">Choose trait</option>
-                      {traitOptions.map((trait) => <option value={trait.key} key={trait.key}>{trait.label}</option>)}
+                      {(ruleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(ruleFolderDraft.first)] || []).map((trait) => <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>)}
                     </select>
                   </label>
                   <ManagerTraitPreview traitKey={ruleDraft.first} url={managerPreviewUrls[ruleDraft.first]} label={traitOptionMap.get(ruleDraft.first)} />
@@ -1365,20 +1566,35 @@ function App() {
                 </div>
                 <div className="trait-picker-field">
                   <label>
+                    Folder
+                    <select
+                      value={ruleFolderDraft.second}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setRuleFolderDraft((current) => ({ ...current, second: event.target.value }))
+                        setRuleDraft((current) => ({ ...current, second: '' }))
+                      }}
+                    >
+                      <option value="">Choose folder</option>
+                      {source.categories.map((category, categoryIndex) => (
+                        <option value={categoryIndex} key={`${category.name}-${categoryIndex}`}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
                     Cannot appear with
-                    <select value={ruleDraft.second} disabled={busy} onChange={(event) => setRuleDraft((current) => ({ ...current, second: event.target.value }))}>
+                    <select value={ruleDraft.second} disabled={busy || ruleFolderDraft.second === ''} onChange={(event) => setRuleDraft((current) => ({ ...current, second: event.target.value }))}>
                       <option value="">Choose trait</option>
-                      {traitOptions.map((trait) => <option value={trait.key} key={trait.key}>{trait.label}</option>)}
+                      {(ruleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(ruleFolderDraft.second)] || []).map((trait) => <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>)}
                     </select>
                   </label>
                   <ManagerTraitPreview traitKey={ruleDraft.second} url={managerPreviewUrls[ruleDraft.second]} label={traitOptionMap.get(ruleDraft.second)} />
-                  <TraitPositionControls trait={findTraitByKey(source, ruleDraft.second)} onChange={updateTraitPosition} />
                 </div>
                 {ruleDraft.first && ruleDraft.second && (
                   <div className="pair-position-preview">
                     <div className="pair-position-preview-header">
                       <span>Selected pair preview</span>
-                      <small>Adjust either X/Y value above</small>
+                      <small>Adjust the first trait's X/Y values above</small>
                     </div>
                     <div className="pair-position-preview-frame">
                       {managerPairPreviewUrl ? (
@@ -1411,6 +1627,131 @@ function App() {
                 ) : <p className="manager-empty">No trait-pair rules yet.</p>}
               </section>
 
+              <section className="rule-manager-section position-manager-section">
+                <div className="rule-manager-title">
+                  <span>
+                    <SlidersHorizontal size={16} />
+                    Position manager
+                  </span>
+                  <strong>{positionRules.length}</strong>
+                </div>
+                <p>Use special X/Y positions only when two selected traits appear together.</p>
+                <div className="trait-picker-field">
+                  <label>
+                    First folder
+                    <select
+                      value={positionRuleFolderDraft.first}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setPositionRuleFolderDraft((current) => ({ ...current, first: event.target.value }))
+                        selectPositionRuleTrait('first', '')
+                      }}
+                    >
+                      <option value="">Choose folder</option>
+                      {source.categories.map((category, categoryIndex) => (
+                        <option value={categoryIndex} disabled={String(categoryIndex) === positionRuleFolderDraft.second} key={`${category.name}-${categoryIndex}`}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    First trait
+                    <select
+                      value={positionRuleDraft.first}
+                      disabled={busy || positionRuleFolderDraft.first === ''}
+                      onChange={(event) => selectPositionRuleTrait('first', event.target.value)}
+                    >
+                      <option value="">Choose trait</option>
+                      {(positionRuleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []).map((trait) => (
+                        <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <ManagerTraitPreview traitKey={positionRuleDraft.first} url={managerPreviewUrls[positionRuleDraft.first]} label={traitOptionMap.get(positionRuleDraft.first)} />
+                  <PairPositionDraftControls
+                    traitKey={positionRuleDraft.first}
+                    label={traitOptionMap.get(positionRuleDraft.first)}
+                    offsetX={positionRuleDraft.firstX}
+                    offsetY={positionRuleDraft.firstY}
+                    onChange={(axis, value) => updatePositionRuleOffset('first', axis, value)}
+                  />
+                </div>
+                <div className="trait-picker-field">
+                  <label>
+                    Second folder
+                    <select
+                      value={positionRuleFolderDraft.second}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setPositionRuleFolderDraft((current) => ({ ...current, second: event.target.value }))
+                        selectPositionRuleTrait('second', '')
+                      }}
+                    >
+                      <option value="">Choose folder</option>
+                      {source.categories.map((category, categoryIndex) => (
+                        <option value={categoryIndex} disabled={String(categoryIndex) === positionRuleFolderDraft.first} key={`${category.name}-${categoryIndex}`}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Second trait
+                    <select
+                      value={positionRuleDraft.second}
+                      disabled={busy || positionRuleFolderDraft.second === ''}
+                      onChange={(event) => selectPositionRuleTrait('second', event.target.value)}
+                    >
+                      <option value="">Choose trait</option>
+                      {(positionRuleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.second)] || []).map((trait) => (
+                        <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <ManagerTraitPreview traitKey={positionRuleDraft.second} url={managerPreviewUrls[positionRuleDraft.second]} label={traitOptionMap.get(positionRuleDraft.second)} />
+                  <PairPositionDraftControls
+                    traitKey={positionRuleDraft.second}
+                    label={traitOptionMap.get(positionRuleDraft.second)}
+                    offsetX={positionRuleDraft.secondX}
+                    offsetY={positionRuleDraft.secondY}
+                    onChange={(axis, value) => updatePositionRuleOffset('second', axis, value)}
+                  />
+                </div>
+                {positionRuleDraft.first && positionRuleDraft.second && (
+                  <div className="pair-position-preview">
+                    <div className="pair-position-preview-header">
+                      <span>Position rule preview</span>
+                      <small>These coordinates apply only to this pair</small>
+                    </div>
+                    <div className="pair-position-preview-frame">
+                      {positionPairPreviewUrl ? (
+                        <img src={positionPairPreviewUrl} alt="Pair-specific position preview" />
+                      ) : (
+                        <Loader2 className="spin" size={22} aria-label="Loading position rule preview" />
+                      )}
+                    </div>
+                  </div>
+                )}
+                <button
+                  className="rule-add"
+                  type="button"
+                  disabled={busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second}
+                  onClick={addPositionRule}
+                >
+                  <SlidersHorizontal size={16} />
+                  Add position rule
+                </button>
+                {positionRules.length ? (
+                  <div className="rule-list">
+                    {positionRules.map((rule, index) => (
+                      <div className="rule-row position-rule-row" key={makeRuleKey(rule)}>
+                        <span>{formatPositionRule(rule, traitOptionMap)}</span>
+                        <button type="button" disabled={busy} aria-label={`Remove position rule ${formatPositionRule(rule, traitOptionMap)}`} onClick={() => removePositionRule(index)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="manager-empty">No pair-specific position rules yet.</p>}
+              </section>
+
               <section className="rule-manager-section">
                 <div className="rule-manager-title">
                   <span>
@@ -1436,7 +1777,6 @@ function App() {
                     </select>
                   </label>
                   <ManagerTraitPreview traitKey={conditionDraft.requiredTrait} url={managerPreviewUrls[conditionDraft.requiredTrait]} label={traitOptionMap.get(conditionDraft.requiredTrait)} />
-                  <TraitPositionControls trait={findTraitByKey(source, conditionDraft.requiredTrait)} onChange={updateTraitPosition} />
                 </div>
                 <button className="rule-add" type="button" disabled={busy || !conditionDraft.category || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
                   <Ban size={16} />
@@ -1554,6 +1894,35 @@ function TraitPositionControls({ trait, onChange }) {
   )
 }
 
+function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange }) {
+  if (!traitKey) return <div className="trait-position-controls empty">Select a trait to set its pair position.</div>
+  const traitName = label?.split(' / ').at(-1) || 'trait'
+  return (
+    <div className="trait-position-controls">
+      <span>
+        <small>X</small>
+        <input
+          type="number"
+          step="1"
+          value={offsetX}
+          aria-label={`Pair-specific horizontal position for ${traitName}`}
+          onChange={(event) => onChange('x', event.target.value)}
+        />
+      </span>
+      <span>
+        <small>Y</small>
+        <input
+          type="number"
+          step="1"
+          value={offsetY}
+          aria-label={`Pair-specific vertical position for ${traitName}`}
+          onChange={(event) => onChange('y', event.target.value)}
+        />
+      </span>
+    </div>
+  )
+}
+
 function ManagerRuleTraitPreview({ url, label }) {
   return (
     <div className="manager-rule-trait" title={label}>
@@ -1620,6 +1989,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
         firstMatches: matchesForId(rule.first),
         secondMatches: matchesForId(rule.second),
       })),
+      positionRules: (source.positionRules || []).map((rule) => ({ ...rule })),
       categoryRequirements: source.categoryRequirements || [],
       categoryConflicts: source.categoryConflicts || [],
     },
@@ -1698,10 +2068,19 @@ function restoreProjectBackup(source, backup) {
     first: remapTraitId(rule.first),
     second: remapTraitId(rule.second),
   }))
+  const positionRules = (backup.source.positionRules || []).map((rule) => ({
+    first: remapTraitId(rule.first),
+    second: remapTraitId(rule.second),
+    firstOffsetX: Math.round(Number(rule.firstOffsetX) || 0),
+    firstOffsetY: Math.round(Number(rule.firstOffsetY) || 0),
+    secondOffsetX: Math.round(Number(rule.secondOffsetX) || 0),
+    secondOffsetY: Math.round(Number(rule.secondOffsetY) || 0),
+  }))
   const restoredSource = {
     ...source,
     categories: restoredCategories,
     incompatibilities,
+    positionRules,
     categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
       ...rule,
       requiredTrait: remapTraitId(rule.requiredTrait),
@@ -1718,7 +2097,7 @@ function restoreProjectBackup(source, backup) {
     skippedTraitCount:
       restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
       backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
-    ruleCount: incompatibilities.length,
+    ruleCount: incompatibilities.length + positionRules.length,
   }
 }
 
@@ -1784,6 +2163,11 @@ function findInvalidRuleReference(source) {
       return 'The backup contains an incompatibility rule that does not match the loaded source.'
     }
   }
+  for (const rule of source.positionRules || []) {
+    if (!traitIds.has(rule.first) || !traitIds.has(rule.second)) {
+      return 'The backup contains a position rule that does not match the loaded source.'
+    }
+  }
   for (const rule of source.categoryRequirements || []) {
     if (!source.categories.some((category) => category.name === rule.category) || !traitIds.has(rule.requiredTrait)) {
       return 'The backup contains a folder rule that does not match the loaded source.'
@@ -1820,6 +2204,7 @@ function parsePsd(psd, fileName) {
     baseLayers,
     categories,
     incompatibilities: [],
+    positionRules: [],
     categoryRequirements: [],
     categoryConflicts: [],
   }
@@ -1898,6 +2283,7 @@ async function parseFolders(files, baseFile) {
     baseImage,
     categories,
     incompatibilities: [],
+    positionRules: [],
     categoryRequirements: [],
     categoryConflicts: [],
   }
@@ -1925,6 +2311,7 @@ async function renderArtwork(source, traits, options = {}) {
     context.imageSmoothingQuality = 'high'
     context.scale(renderScale, renderScale)
   }
+  const positionOverrides = getPairPositionOverrides(traits, source.positionRules)
 
   if (source.type === 'psd') {
     for (const layer of [...source.baseLayers].reverse()) {
@@ -1932,20 +2319,33 @@ async function renderArtwork(source, traits, options = {}) {
     }
     for (const trait of traits) {
       if (trait.isNone) continue
+      const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
       for (const layer of trait.layers) {
-        drawPsdLayer(context, layer, getTraitOffset(trait, 'x'), getTraitOffset(trait, 'y'))
+        drawPsdLayer(context, layer, position.x, position.y)
       }
     }
   } else {
     if (source.baseImage) context.drawImage(source.baseImage, 0, 0, source.width, source.height)
     for (const trait of traits) {
       if (trait.isNone) continue
-      context.drawImage(trait.image, getTraitOffset(trait, 'x'), getTraitOffset(trait, 'y'), source.width, source.height)
+      const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
+      context.drawImage(trait.image, position.x, position.y, source.width, source.height)
     }
   }
 
   const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
   return canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+}
+
+function getPairPositionOverrides(traits, positionRules = []) {
+  const selectedTraitIds = new Set(traits.filter((trait) => !trait.isNone).map((trait) => getTraitId(trait)))
+  const overrides = new Map()
+  for (const rule of positionRules || []) {
+    if (!selectedTraitIds.has(rule.first) || !selectedTraitIds.has(rule.second)) continue
+    overrides.set(rule.first, { x: Math.round(Number(rule.firstOffsetX) || 0), y: Math.round(Number(rule.firstOffsetY) || 0) })
+    overrides.set(rule.second, { x: Math.round(Number(rule.secondOffsetX) || 0), y: Math.round(Number(rule.secondOffsetY) || 0) })
+  }
+  return overrides
 }
 
 function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
@@ -2244,6 +2644,10 @@ function formatCategoryRequirement(rule, traitOptionMap = new Map()) {
 
 function formatCategoryConflict(rule) {
   return `${rule.first} cannot appear with ${rule.second}`
+}
+
+function formatPositionRule(rule, traitOptionMap = new Map()) {
+  return `${formatTraitKey(rule.first, traitOptionMap)} (X ${rule.firstOffsetX}, Y ${rule.firstOffsetY}) with ${formatTraitKey(rule.second, traitOptionMap)} (X ${rule.secondOffsetX}, Y ${rule.secondOffsetY})`
 }
 
 function formatTraitKey(key, traitOptionMap = new Map()) {
