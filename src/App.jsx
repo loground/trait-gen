@@ -8,7 +8,6 @@ import {
   Ban,
   Calculator,
   CheckCircle2,
-  Eye,
   FolderOpen,
   ImagePlus,
   Layers3,
@@ -28,6 +27,7 @@ import { buildSmartRarityProfile } from './smartRarities.js'
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
 const COMBO_COUNT_DISPLAY_LIMIT = 1000000
+const COMBO_COUNT_TIME_BUDGET_MS = 32
 const METADATA_FILE_NAME = 'metadata-file.csv'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
@@ -62,7 +62,13 @@ function App() {
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
+  const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
+  const [traitManagerOpen, setTraitManagerOpen] = useState(false)
+  const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
+  const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
+  const [traitEditorPreviewUrl, setTraitEditorPreviewUrl] = useState('')
+  const [activeDropTarget, setActiveDropTarget] = useState('')
   const [ruleDraft, setRuleDraft] = useState(emptyRuleDraft)
   const [conditionDraft, setConditionDraft] = useState(emptyConditionDraft)
   const [folderConflictDraft, setFolderConflictDraft] = useState(emptyFolderConflictDraft)
@@ -72,6 +78,11 @@ function App() {
   const baseFileRef = useRef(null)
   const previewTimerRef = useRef(null)
   const previewRequestRef = useRef(0)
+  const managerPreviewUrlsRef = useRef({})
+  const managerPreviewSignaturesRef = useRef({})
+  const managerPairPreviewUrlRef = useRef('')
+  const traitEditorPreviewUrlRef = useRef('')
+  const traitPreviewDragRef = useRef(null)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
 
   const combinationStructureKey = getCombinationStructureKey(source)
@@ -112,17 +123,159 @@ function App() {
     return source.categories[selectedCategoryIndex] || source.categories[0]
   }, [source, selectedCategoryIndex])
 
+  const managerPreviewTraitKeys = useMemo(
+    () => [
+      ...new Set([
+        ruleDraft.first,
+        ruleDraft.second,
+        conditionDraft.requiredTrait,
+        ...(source?.incompatibilities || []).flatMap((rule) => [rule.first, rule.second]),
+        ...(source?.categoryRequirements || []).map((rule) => rule.requiredTrait),
+      ].filter(Boolean)),
+    ],
+    [ruleDraft.first, ruleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.categoryRequirements],
+  )
+
   useEffect(
     () => () => {
       if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
       previewRequestRef.current += 1
+      Object.values(managerPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url))
+      if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
+      if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
     },
     [],
   )
 
-  async function handlePsdUpload(event) {
-    const file = event.target.files?.[0]
+  useEffect(() => {
+    let cancelled = false
+
+    async function refreshManagerPreviews() {
+      if (!traitManagerOpen || !source) {
+        Object.values(managerPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url))
+        managerPreviewUrlsRef.current = {}
+        managerPreviewSignaturesRef.current = {}
+        setManagerPreviewUrls({})
+        return
+      }
+
+      const desiredKeys = new Set(managerPreviewTraitKeys)
+      const nextUrls = { ...managerPreviewUrlsRef.current }
+      const nextSignatures = { ...managerPreviewSignaturesRef.current }
+      for (const [key, url] of Object.entries(nextUrls)) {
+        if (!desiredKeys.has(key)) {
+          URL.revokeObjectURL(url)
+          delete nextUrls[key]
+          delete nextSignatures[key]
+        }
+      }
+
+      for (const key of managerPreviewTraitKeys) {
+        const trait = findTraitByKey(source, key)
+        if (!trait) continue
+        const signature = `${getTraitOffset(trait, 'x')}:${getTraitOffset(trait, 'y')}`
+        if (nextUrls[key] && nextSignatures[key] === signature) continue
+        if (nextUrls[key]) URL.revokeObjectURL(nextUrls[key])
+        const blob = await renderArtwork(source, [trait], { renderMaxDimension: 240 })
+        const url = URL.createObjectURL(blob)
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        nextUrls[key] = url
+        nextSignatures[key] = signature
+      }
+
+      if (cancelled) return
+      managerPreviewUrlsRef.current = nextUrls
+      managerPreviewSignaturesRef.current = nextSignatures
+      setManagerPreviewUrls(nextUrls)
+    }
+
+    refreshManagerPreviews().catch(() => {
+      if (!cancelled) setManagerPreviewUrls({})
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [traitManagerOpen, source, managerPreviewTraitKeys])
+
+  useEffect(() => {
+    let cancelled = false
+    let timer = null
+    const firstTrait = source ? findTraitByKey(source, ruleDraft.first) : null
+    const secondTrait = source ? findTraitByKey(source, ruleDraft.second) : null
+
+    if (!traitManagerOpen || !source || !firstTrait || !secondTrait) {
+      if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
+      managerPairPreviewUrlRef.current = ''
+      setManagerPairPreviewUrl('')
+      return undefined
+    }
+
+    timer = window.setTimeout(async () => {
+      try {
+        const blob = await renderArtwork(source, [firstTrait, secondTrait], { renderMaxDimension: 360 })
+        const url = URL.createObjectURL(blob)
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
+        managerPairPreviewUrlRef.current = url
+        setManagerPairPreviewUrl(url)
+      } catch {
+        if (!cancelled) setManagerPairPreviewUrl('')
+      }
+    }, 120)
+
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [traitManagerOpen, source, ruleDraft.first, ruleDraft.second])
+
+  useEffect(() => {
+    let cancelled = false
+    let timer = null
+    const category = source?.categories?.[selectedCategoryIndex]
+    const trait = category?.traits?.[selectedTraitIndex]
+
+    if (!traitEditorOpen || !source || !trait) {
+      if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
+      traitEditorPreviewUrlRef.current = ''
+      setTraitEditorPreviewUrl('')
+      return undefined
+    }
+
+    timer = window.setTimeout(async () => {
+      try {
+        const blob = await renderArtwork(source, [trait], { renderMaxDimension: 640 })
+        const url = URL.createObjectURL(blob)
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
+        traitEditorPreviewUrlRef.current = url
+        setTraitEditorPreviewUrl(url)
+      } catch {
+        if (!cancelled) setTraitEditorPreviewUrl('')
+      }
+    }, 70)
+
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [traitEditorOpen, source, selectedCategoryIndex, selectedTraitIndex])
+
+  async function importPsdFile(file) {
     if (!file) return
+    if (!file.name.toLowerCase().endsWith('.psd') && file.type !== 'image/vnd.adobe.photoshop') {
+      setStatus('Drop a PSD file into Single PSD.')
+      return
+    }
 
     setBusy(true)
     setStatus('Reading PSD layers...')
@@ -149,17 +302,57 @@ function App() {
       setStatus(getErrorMessage(error, 'Could not read that PSD. Try a layered RGB PSD with rasterized trait layers.'))
     } finally {
       setBusy(false)
-      event.target.value = ''
     }
+  }
+
+  async function handlePsdUpload(event) {
+    const file = event.target.files?.[0]
+    await importPsdFile(file)
+    event.target.value = ''
+  }
+
+  function selectBaseFile(file) {
+    if (!file) return
+    if (!IMAGE_TYPES.includes(file.type)) {
+      setStatus('Drop a PNG, JPG, or WebP image into Base image.')
+      return
+    }
+
+    baseFileRef.current = file
+    setStatus(`Base image selected: ${file.name}. Now add the trait folder.`)
   }
 
   async function handleBaseUpload(event) {
     const file = event.target.files?.[0]
-    if (!file) return
-
-    baseFileRef.current = file
-    setStatus(`Base image selected: ${file.name}. Now add the trait folder.`)
+    selectBaseFile(file)
     event.target.value = ''
+  }
+
+  function handleDropOver(event, target) {
+    event.preventDefault()
+    if (!busy) {
+      event.dataTransfer.dropEffect = 'copy'
+      setActiveDropTarget(target)
+    }
+  }
+
+  function handleDropLeave(event, target) {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      setActiveDropTarget((current) => (current === target ? '' : current))
+    }
+  }
+
+  async function handleFileDrop(event, target) {
+    event.preventDefault()
+    setActiveDropTarget('')
+    if (busy) return
+    const file = Array.from(event.dataTransfer.files || [])[0]
+    if (!file) {
+      setStatus('No file was found in that drop.')
+      return
+    }
+    if (target === 'psd') await importPsdFile(file)
+    if (target === 'base') selectBaseFile(file)
   }
 
   async function handleFolderUpload(event) {
@@ -209,21 +402,6 @@ function App() {
         setStatus(getErrorMessage(error, 'Could not refresh the preview.'))
       })
     }, PREVIEW_DEBOUNCE_MS)
-  }
-
-  async function previewTrait(categoryIndex, traitIndex) {
-    if (!source || busy) return
-    const category = source.categories[categoryIndex]
-    const trait = category?.traits[traitIndex]
-    if (!trait) return
-
-    const blob = await renderArtwork(source, [trait])
-    const url = URL.createObjectURL(blob)
-    setPreviewUrl((current) => {
-      if (current) URL.revokeObjectURL(current)
-      return url
-    })
-    setStatus(`Previewing ${category.name} / ${getTraitMetadataName(trait)}.`)
   }
 
   async function moveCategory(index, direction) {
@@ -308,7 +486,11 @@ function App() {
     }
 
     const nextSource = { ...source, categories }
-    const capacity = validCombinationInfo.capped ? `${validCombinationInfo.count.toLocaleString()}+` : validCombinationInfo.count.toLocaleString()
+    const capacity = validCombinationInfo.approximate
+      ? `${validCombinationInfo.count.toLocaleString()}+ checked before pausing the live count`
+      : validCombinationInfo.capped
+        ? `${validCombinationInfo.count.toLocaleString()}+`
+        : validCombinationInfo.count.toLocaleString()
     const duplicateNames = findDuplicateCategoryNames(categories)
     const duplicateWarning = duplicateNames.length ? ` Rename duplicate folder name${duplicateNames.length === 1 ? '' : 's'}: ${duplicateNames.join(', ')}.` : ''
     setSource(nextSource)
@@ -358,6 +540,86 @@ function App() {
     const nextSource = { ...source, categories }
     setSource(nextSource)
     schedulePreview(nextSource)
+  }
+
+  function updateTraitPosition(traitKey, axis, value) {
+    if (!source || busy) return
+    const numericValue = Number(value)
+    if (!Number.isFinite(numericValue)) return
+    const trait = findTraitByKey(source, traitKey)
+    if (!trait) return
+    const nextX = axis === 'x' ? numericValue : getTraitOffset(trait, 'x')
+    const nextY = axis === 'y' ? numericValue : getTraitOffset(trait, 'y')
+    updateTraitPositionPair(traitKey, nextX, nextY)
+  }
+
+  function updateTraitPositionPair(traitKey, x, y) {
+    if (!source || busy) return
+    const limit = Math.max(source.width, source.height) * 2
+    const offsetX = Math.round(Math.max(-limit, Math.min(limit, Number(x) || 0)))
+    const offsetY = Math.round(Math.max(-limit, Math.min(limit, Number(y) || 0)))
+    const categories = source.categories.map((category) => ({
+      ...category,
+      traits: category.traits.map((trait) => (makeTraitKey(trait) === traitKey ? { ...trait, offsetX, offsetY } : trait)),
+    }))
+    const nextSource = { ...source, categories }
+    setSource(nextSource)
+    schedulePreview(nextSource)
+  }
+
+  function handleTraitPreviewPointerDown(event, trait) {
+    if (!trait || busy || !source) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    traitPreviewDragRef.current = {
+      pointerId: event.pointerId,
+      traitKey: makeTraitKey(trait),
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: getTraitOffset(trait, 'x'),
+      offsetY: getTraitOffset(trait, 'y'),
+    }
+  }
+
+  function handleTraitPreviewPointerMove(event) {
+    const drag = traitPreviewDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId || !source) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const displayScale = Math.max(0.0001, Math.min(bounds.width / source.width, bounds.height / source.height))
+    const nextX = drag.offsetX + (event.clientX - drag.startX) / displayScale
+    const nextY = drag.offsetY + (event.clientY - drag.startY) / displayScale
+    updateTraitPositionPair(drag.traitKey, nextX, nextY)
+  }
+
+  function handleTraitPreviewPointerUp(event) {
+    if (traitPreviewDragRef.current?.pointerId === event.pointerId) {
+      traitPreviewDragRef.current = null
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+    }
+  }
+
+  async function moveTraitToCategory(fromCategoryIndex, traitIndex, toCategoryIndex) {
+    if (!source || busy || fromCategoryIndex === toCategoryIndex) return
+    const fromCategory = source.categories[fromCategoryIndex]
+    const toCategory = source.categories[toCategoryIndex]
+    const trait = fromCategory?.traits[traitIndex]
+    if (!trait || !toCategory) return
+
+    const categories = source.categories.map((category, categoryIndex) => {
+      if (categoryIndex === fromCategoryIndex) {
+        return { ...category, traits: category.traits.filter((_, index) => index !== traitIndex) }
+      }
+      if (categoryIndex === toCategoryIndex) {
+        return { ...category, traits: [...category.traits, { ...trait, category: category.name }] }
+      }
+      return category
+    })
+    const nextSource = { ...source, categories }
+    setSource(nextSource)
+    setSelectedCategoryIndex(toCategoryIndex)
+    setSelectedTraitIndex(Math.max(0, categories[toCategoryIndex].traits.length - 1))
+    setStatus(`Moved ${getTraitMetadataName(trait)} from ${fromCategory.name} to ${toCategory.name}.`)
+    await renderPreview(nextSource)
   }
 
   async function addIncompatibility() {
@@ -462,7 +724,7 @@ function App() {
     }
 
     const validCombinationInfo = countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
-    if (!validCombinationInfo.count) {
+    if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
       setStatus('No valid editions remain. Remove a trait rule or restore more traits.')
       return
     }
@@ -647,6 +909,8 @@ function App() {
   const categoryConflicts = source?.categoryConflicts || []
   const traitEditorCategory = selectedCategory || source?.categories?.[0] || null
   const traitEditorCategoryIndex = source?.categories?.length ? Math.min(selectedCategoryIndex, source.categories.length - 1) : 0
+  const traitEditorTraitIndex = traitEditorCategory?.traits?.length ? Math.min(selectedTraitIndex, traitEditorCategory.traits.length - 1) : 0
+  const traitEditorTrait = traitEditorCategory?.traits?.[traitEditorTraitIndex] || null
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
 
   return (
@@ -665,17 +929,38 @@ function App() {
       <section className="workbench">
         <aside className="panel upload-panel">
           <h2>Sources</h2>
-          <button className="drop-button" type="button" onClick={() => psdInputRef.current?.click()} disabled={busy}>
+          <button
+            className={`drop-button ${activeDropTarget === 'psd' ? 'drag-active' : ''}`}
+            type="button"
+            onClick={() => psdInputRef.current?.click()}
+            onDragEnter={(event) => handleDropOver(event, 'psd')}
+            onDragOver={(event) => handleDropOver(event, 'psd')}
+            onDragLeave={(event) => handleDropLeave(event, 'psd')}
+            onDrop={(event) => handleFileDrop(event, 'psd')}
+            disabled={busy}
+          >
             <Layers3 size={22} />
             <span>
               <strong>Single PSD</strong>
-              <small>Root folders become trait categories.</small>
+              <small>Drop a PSD here, or click to browse.</small>
             </span>
           </button>
           <div className="split-row">
-            <button type="button" onClick={() => baseInputRef.current?.click()} disabled={busy}>
+            <button
+              className={`base-drop-button ${activeDropTarget === 'base' ? 'drag-active' : ''}`}
+              type="button"
+              onClick={() => baseInputRef.current?.click()}
+              onDragEnter={(event) => handleDropOver(event, 'base')}
+              onDragOver={(event) => handleDropOver(event, 'base')}
+              onDragLeave={(event) => handleDropLeave(event, 'base')}
+              onDrop={(event) => handleFileDrop(event, 'base')}
+              disabled={busy}
+            >
               <ImagePlus size={18} />
-              Base image
+              <span>
+                <strong>Base image</strong>
+                <small>Drop or browse</small>
+              </span>
             </button>
             <button type="button" onClick={() => folderInputRef.current?.click()} disabled={busy}>
               <FolderOpen size={18} />
@@ -750,151 +1035,19 @@ function App() {
           )}
 
           {source && (
-            <div className="rule-panel">
+            <div className="compact-manager">
               <div className="chance-header">
                 <span>
                   <Ban size={15} />
                   Trait manager
                 </span>
-                <strong>{incompatibilities.length}</strong>
+                <strong>{incompatibilities.length + categoryRequirements.length + categoryConflicts.length}</strong>
               </div>
-              <label>
-                First trait
-                <select value={ruleDraft.first} disabled={busy} onChange={(event) => setRuleDraft((current) => ({ ...current, first: event.target.value }))}>
-                  <option value="">Choose trait</option>
-                  {traitOptions.map((trait) => (
-                    <option value={trait.key} key={trait.key}>
-                      {trait.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Cannot appear with
-                <select value={ruleDraft.second} disabled={busy} onChange={(event) => setRuleDraft((current) => ({ ...current, second: event.target.value }))}>
-                  <option value="">Choose trait</option>
-                  {traitOptions.map((trait) => (
-                    <option value={trait.key} key={trait.key}>
-                      {trait.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="rule-add" type="button" disabled={busy || !ruleDraft.first || !ruleDraft.second || ruleDraft.first === ruleDraft.second} onClick={addIncompatibility}>
+              <button className="primary-action" type="button" disabled={busy} onClick={() => setTraitManagerOpen(true)}>
                 <Ban size={16} />
-                Add rule
+                Open trait manager
               </button>
-              {incompatibilities.length ? (
-                <div className="rule-list">
-                  {incompatibilities.map((rule, index) => (
-                    <div className="rule-row" key={makeRuleKey(rule)}>
-                      <span>{formatRule(rule, traitOptionMap)}</span>
-                      <button type="button" disabled={busy} aria-label={`Remove rule ${formatRule(rule, traitOptionMap)}`} onClick={() => removeIncompatibility(index)}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="chance-note">Add rules for traits that should never be used in the same image.</p>
-              )}
-
-              <div className="rule-divider" />
-              <div className="chance-header">
-                <span>Folder rules</span>
-                <strong>{categoryRequirements.length}</strong>
-              </div>
-              <label>
-                Folder
-                <select value={conditionDraft.category} disabled={busy} onChange={(event) => setConditionDraft((current) => ({ ...current, category: event.target.value }))}>
-                  <option value="">Choose folder</option>
-                  {source.categories.map((category) => (
-                    <option value={category.name} key={category.name}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Only apply when
-                <select value={conditionDraft.requiredTrait} disabled={busy} onChange={(event) => setConditionDraft((current) => ({ ...current, requiredTrait: event.target.value }))}>
-                  <option value="">Choose trait</option>
-                  {traitOptions.map((trait) => (
-                    <option value={trait.key} key={trait.key}>
-                      {trait.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="rule-add" type="button" disabled={busy || !conditionDraft.category || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
-                <Ban size={16} />
-                Add folder rule
-              </button>
-              {categoryRequirements.length ? (
-                <div className="rule-list">
-                  {categoryRequirements.map((rule, index) => (
-                    <div className="rule-row" key={`${rule.category}-${rule.requiredTrait}`}>
-                      <span>{formatCategoryRequirement(rule, traitOptionMap)}</span>
-                      <button type="button" disabled={busy} aria-label={`Remove rule ${formatCategoryRequirement(rule, traitOptionMap)}`} onClick={() => removeCategoryRequirement(index)}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="chance-note">Use this for a whole folder, like Bobo Teeth only applying with Face / Bobo.</p>
-              )}
-
-              <div className="rule-divider" />
-              <div className="chance-header">
-                <span>Folder conflicts</span>
-                <strong>{categoryConflicts.length}</strong>
-              </div>
-              <label>
-                First folder
-                <select value={folderConflictDraft.first} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, first: event.target.value }))}>
-                  <option value="">Choose folder</option>
-                  {source.categories.map((category) => (
-                    <option value={category.name} key={category.name}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Cannot appear with
-                <select value={folderConflictDraft.second} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, second: event.target.value }))}>
-                  <option value="">Choose folder</option>
-                  {source.categories.map((category) => (
-                    <option value={category.name} key={category.name}>
-                      {category.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                className="rule-add"
-                type="button"
-                disabled={busy || !folderConflictDraft.first || !folderConflictDraft.second || folderConflictDraft.first === folderConflictDraft.second}
-                onClick={addCategoryConflict}
-              >
-                <Ban size={16} />
-                Add folder conflict
-              </button>
-              {categoryConflicts.length ? (
-                <div className="rule-list">
-                  {categoryConflicts.map((rule, index) => (
-                    <div className="rule-row" key={makeRuleKey(rule)}>
-                      <span>{formatCategoryConflict(rule)}</span>
-                      <button type="button" disabled={busy} aria-label={`Remove rule ${formatCategoryConflict(rule)}`} onClick={() => removeCategoryConflict(index)}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="chance-note">Use this when two whole folders should never render in the same image.</p>
-              )}
+              <p className="chance-note">Manage trait pairs, folder rules, and folder conflicts together.</p>
             </div>
           )}
         </aside>
@@ -936,7 +1089,11 @@ function App() {
                 </button>
               </div>
               <span className="field-hint">
-                {maxEditions ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} maximum` : 'Load traits to calculate the maximum.'}
+                {maxEditionsInfo.approximate
+                  ? `${formatComboCount(maxEditionsInfo)} — live counting paused to keep editing fast.`
+                  : maxEditions
+                    ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} maximum`
+                    : 'Load traits to calculate the maximum.'}
               </span>
             </label>
             <label>
@@ -1019,91 +1176,392 @@ function App() {
             </header>
             <div className="trait-editor-workspace">
               <nav className="trait-editor-nav" aria-label="Trait folders">
-                {source.categories.map((category, categoryIndex) => (
-                  <button
-                    className={traitEditorCategoryIndex === categoryIndex ? 'active' : ''}
-                    type="button"
-                    key={`${category.name}-${categoryIndex}`}
-                    onClick={() => setSelectedCategoryIndex(categoryIndex)}
-                  >
-                    <span>{category.name}</span>
-                    <strong>{getWeightedTraits(category).length}/{category.traits.length}</strong>
-                  </button>
-                ))}
-              </nav>
-              <aside className="trait-editor-preview" aria-label="Current preview">
-                <div className="trait-editor-preview-frame">
-                  {previewUrl ? (
-                    <img src={previewUrl} alt="Current artwork preview" />
-                  ) : (
-                    <div className="trait-editor-preview-empty">
-                      <Upload size={24} />
-                    </div>
-                  )}
+                <div className="editor-column-label">Folders</div>
+                <div className="trait-editor-folder-list">
+                  {source.categories.map((category, categoryIndex) => (
+                    <button
+                      className={traitEditorCategoryIndex === categoryIndex ? 'active' : ''}
+                      type="button"
+                      key={`${category.name}-${categoryIndex}`}
+                      onClick={() => {
+                        setSelectedCategoryIndex(categoryIndex)
+                        setSelectedTraitIndex(0)
+                      }}
+                    >
+                      <span>{category.name}</span>
+                      <strong>{category.traits.length}</strong>
+                    </button>
+                  ))}
                 </div>
-                <span>Current preview</span>
-              </aside>
-              {traitEditorCategory && (
-                <div className="trait-editor-detail">
-                  <div className="trait-editor-detail-header">
-                    <label className="group-name-control">
-                      Group name
+                {traitEditorCategory && (
+                  <div className="trait-folder-settings">
+                    <label>
+                      Folder name
                       <input
                         value={traitEditorCategory.name}
                         disabled={busy || traitEditorCategory.enabled === false}
                         onChange={(event) => renameCategory(traitEditorCategoryIndex, event.target.value)}
                       />
-                      <span>{traitEditorCategory.traits.length} traits</span>
                     </label>
-                    <label className="none-control">
-                      No trait (%)
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.1"
-                        value={traitEditorCategory.noneWeight ?? 0}
-                        disabled={busy || traitEditorCategory.enabled === false}
-                        onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
-                      />
-                    </label>
-                  </div>
-                  <div className="trait-editor-table">
-                    <div className="trait-editor-table-head">
-                      <span>Name in metadata</span>
-                      <span>Chance (%)</span>
-                      <span>Preview</span>
-                    </div>
-                    {traitEditorCategory.traits.map((trait, traitIndex) => (
-                      <div className="trait-editor-table-row" key={`${getTraitId(trait)}-${traitIndex}`}>
-                        <input
-                          aria-label={`Rename ${trait.originalName || trait.name}`}
-                          value={trait.name}
-                          disabled={busy || traitEditorCategory.enabled === false}
-                          onChange={(event) => renameTrait(traitEditorCategoryIndex, traitIndex, event.target.value)}
-                        />
+                    <label>
+                      No trait chance
+                      <div className="input-with-suffix">
                         <input
                           type="number"
                           min="0"
                           max="100"
                           step="0.1"
-                          value={trait.weight ?? 1}
+                          value={traitEditorCategory.noneWeight ?? 0}
                           disabled={busy || traitEditorCategory.enabled === false}
-                          onChange={(event) => updateTraitWeight(traitEditorCategoryIndex, traitIndex, event.target.value)}
+                          onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
                         />
-                        <button type="button" disabled={busy} aria-label={`Preview ${trait.name}`} title="Preview trait" onClick={() => previewTrait(traitEditorCategoryIndex, traitIndex)}>
-                          <Eye size={15} />
+                        <span>%</span>
+                      </div>
+                    </label>
+                  </div>
+                )}
+              </nav>
+
+              <section className="trait-editor-list" aria-label="Traits in selected folder">
+                <header className="trait-editor-list-header">
+                  <div>
+                    <p className="eyebrow">Selected folder</p>
+                    <h3>{traitEditorCategory?.name}</h3>
+                  </div>
+                  <span>{traitEditorCategory?.traits.length || 0} traits</span>
+                </header>
+                <div className="trait-editor-list-scroll">
+                  {traitEditorCategory?.traits.map((trait, traitIndex) => (
+                    <button
+                      className={`trait-editor-list-item ${traitEditorTraitIndex === traitIndex ? 'active' : ''}`}
+                      type="button"
+                      key={`${getTraitId(trait)}-${traitIndex}`}
+                      onClick={() => setSelectedTraitIndex(traitIndex)}
+                    >
+                      <span>{getTraitMetadataName(trait)}</span>
+                      <small>{getTraitWeight(trait)}% · X {getTraitOffset(trait, 'x')} · Y {getTraitOffset(trait, 'y')}</small>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <aside className="trait-editor-inspector" aria-label="Selected trait inspector">
+                {traitEditorTrait ? (
+                  <>
+                    <header className="trait-inspector-header">
+                      <p className="eyebrow">Selected trait</p>
+                      <h3>{getTraitMetadataName(traitEditorTrait)}</h3>
+                    </header>
+                    <div
+                      className="trait-inspector-preview"
+                      onPointerDown={(event) => handleTraitPreviewPointerDown(event, traitEditorTrait)}
+                      onPointerMove={handleTraitPreviewPointerMove}
+                      onPointerUp={handleTraitPreviewPointerUp}
+                      onPointerCancel={handleTraitPreviewPointerUp}
+                    >
+                      {traitEditorPreviewUrl ? (
+                        <img src={traitEditorPreviewUrl} alt={`${getTraitMetadataName(traitEditorTrait)} positioned preview`} draggable="false" />
+                      ) : (
+                        <Loader2 className="spin" size={24} aria-label="Refreshing trait preview" />
+                      )}
+                      <span>Drag artwork to reposition</span>
+                    </div>
+                    <div className="trait-inspector-form">
+                      <label>
+                        Name in metadata
+                        <input
+                          value={traitEditorTrait.name}
+                          disabled={busy || traitEditorCategory.enabled === false}
+                          onChange={(event) => renameTrait(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Chance
+                        <div className="input-with-suffix">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.1"
+                            value={traitEditorTrait.weight ?? 1}
+                            disabled={busy || traitEditorCategory.enabled === false}
+                            onChange={(event) => updateTraitWeight(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
+                          />
+                          <span>%</span>
+                        </div>
+                      </label>
+                      <div className="trait-inspector-position">
+                        <div className="position-title">
+                          <span>Position</span>
+                          <button type="button" disabled={busy} onClick={() => updateTraitPositionPair(makeTraitKey(traitEditorTrait), 0, 0)}>Reset</button>
+                        </div>
+                        <div className="position-axis-grid">
+                          <label>
+                            X
+                            <input type="number" step="1" value={getTraitOffset(traitEditorTrait, 'x')} disabled={busy} onChange={(event) => updateTraitPosition(makeTraitKey(traitEditorTrait), 'x', event.target.value)} />
+                          </label>
+                          <label>
+                            Y
+                            <input type="number" step="1" value={getTraitOffset(traitEditorTrait, 'y')} disabled={busy} onChange={(event) => updateTraitPosition(makeTraitKey(traitEditorTrait), 'y', event.target.value)} />
+                          </label>
+                        </div>
+                      </div>
+                      <label>
+                        Move to folder
+                        <select
+                          value=""
+                          disabled={busy || source.categories.length < 2}
+                          onChange={(event) => moveTraitToCategory(traitEditorCategoryIndex, traitEditorTraitIndex, Number(event.target.value))}
+                        >
+                          <option value="">Choose folder</option>
+                          {source.categories.map((category, categoryIndex) => categoryIndex !== traitEditorCategoryIndex && (
+                            <option value={categoryIndex} key={`${category.name}-${categoryIndex}`}>{category.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </>
+                ) : (
+                  <div className="trait-inspector-empty">Choose a trait to edit it.</div>
+                )}
+              </aside>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {traitManagerOpen && source && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="rule-manager-modal" role="dialog" aria-modal="true" aria-label="Trait manager">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Collection compatibility</p>
+                <h2>Trait manager</h2>
+              </div>
+              <button type="button" aria-label="Close trait manager" onClick={() => setTraitManagerOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="rule-manager-grid">
+              <section className="rule-manager-section">
+                <div className="rule-manager-title">
+                  <span>
+                    <Ban size={16} />
+                    Trait pairs
+                  </span>
+                  <strong>{incompatibilities.length}</strong>
+                </div>
+                <p>Select two individual traits that must never appear together.</p>
+                <div className="trait-picker-field">
+                  <label>
+                    First trait
+                    <select value={ruleDraft.first} disabled={busy} onChange={(event) => setRuleDraft((current) => ({ ...current, first: event.target.value }))}>
+                      <option value="">Choose trait</option>
+                      {traitOptions.map((trait) => <option value={trait.key} key={trait.key}>{trait.label}</option>)}
+                    </select>
+                  </label>
+                  <ManagerTraitPreview traitKey={ruleDraft.first} url={managerPreviewUrls[ruleDraft.first]} label={traitOptionMap.get(ruleDraft.first)} />
+                  <TraitPositionControls trait={findTraitByKey(source, ruleDraft.first)} onChange={updateTraitPosition} />
+                </div>
+                <div className="trait-picker-field">
+                  <label>
+                    Cannot appear with
+                    <select value={ruleDraft.second} disabled={busy} onChange={(event) => setRuleDraft((current) => ({ ...current, second: event.target.value }))}>
+                      <option value="">Choose trait</option>
+                      {traitOptions.map((trait) => <option value={trait.key} key={trait.key}>{trait.label}</option>)}
+                    </select>
+                  </label>
+                  <ManagerTraitPreview traitKey={ruleDraft.second} url={managerPreviewUrls[ruleDraft.second]} label={traitOptionMap.get(ruleDraft.second)} />
+                  <TraitPositionControls trait={findTraitByKey(source, ruleDraft.second)} onChange={updateTraitPosition} />
+                </div>
+                {ruleDraft.first && ruleDraft.second && (
+                  <div className="pair-position-preview">
+                    <div className="pair-position-preview-header">
+                      <span>Selected pair preview</span>
+                      <small>Adjust either X/Y value above</small>
+                    </div>
+                    <div className="pair-position-preview-frame">
+                      {managerPairPreviewUrl ? (
+                        <img src={managerPairPreviewUrl} alt="Combined selected trait pair preview" />
+                      ) : (
+                        <Loader2 className="spin" size={22} aria-label="Loading pair preview" />
+                      )}
+                    </div>
+                  </div>
+                )}
+                <button className="rule-add" type="button" disabled={busy || !ruleDraft.first || !ruleDraft.second || ruleDraft.first === ruleDraft.second} onClick={addIncompatibility}>
+                  <Ban size={16} />
+                  Add trait rule
+                </button>
+                {incompatibilities.length ? (
+                  <div className="rule-list">
+                    {incompatibilities.map((rule, index) => (
+                      <div className="rule-row visual-rule-row" key={makeRuleKey(rule)}>
+                        <div className="rule-visuals">
+                          <ManagerRuleTraitPreview url={managerPreviewUrls[rule.first]} label={traitOptionMap.get(rule.first)} />
+                          <span>cannot appear with</span>
+                          <ManagerRuleTraitPreview url={managerPreviewUrls[rule.second]} label={traitOptionMap.get(rule.second)} />
+                        </div>
+                        <button type="button" disabled={busy} aria-label={`Remove rule ${formatRule(rule, traitOptionMap)}`} onClick={() => removeIncompatibility(index)}>
+                          <Trash2 size={14} />
                         </button>
                       </div>
                     ))}
                   </div>
+                ) : <p className="manager-empty">No trait-pair rules yet.</p>}
+              </section>
+
+              <section className="rule-manager-section">
+                <div className="rule-manager-title">
+                  <span>
+                    <FolderOpen size={16} />
+                    Folder rules
+                  </span>
+                  <strong>{categoryRequirements.length}</strong>
                 </div>
-              )}
+                <p>Only apply an entire folder when a specific trait is selected.</p>
+                <label>
+                  Folder
+                  <select value={conditionDraft.category} disabled={busy} onChange={(event) => setConditionDraft((current) => ({ ...current, category: event.target.value }))}>
+                    <option value="">Choose folder</option>
+                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
+                  </select>
+                </label>
+                <div className="trait-picker-field">
+                  <label>
+                    Only apply when
+                    <select value={conditionDraft.requiredTrait} disabled={busy} onChange={(event) => setConditionDraft((current) => ({ ...current, requiredTrait: event.target.value }))}>
+                      <option value="">Choose trait</option>
+                      {traitOptions.map((trait) => <option value={trait.key} key={trait.key}>{trait.label}</option>)}
+                    </select>
+                  </label>
+                  <ManagerTraitPreview traitKey={conditionDraft.requiredTrait} url={managerPreviewUrls[conditionDraft.requiredTrait]} label={traitOptionMap.get(conditionDraft.requiredTrait)} />
+                  <TraitPositionControls trait={findTraitByKey(source, conditionDraft.requiredTrait)} onChange={updateTraitPosition} />
+                </div>
+                <button className="rule-add" type="button" disabled={busy || !conditionDraft.category || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
+                  <Ban size={16} />
+                  Add folder rule
+                </button>
+                {categoryRequirements.length ? (
+                  <div className="rule-list">
+                    {categoryRequirements.map((rule, index) => (
+                      <div className="rule-row visual-rule-row" key={`${rule.category}-${rule.requiredTrait}`}>
+                        <div className="folder-rule-visual">
+                          <span><strong>{rule.category}</strong> only applies with</span>
+                          <ManagerRuleTraitPreview url={managerPreviewUrls[rule.requiredTrait]} label={traitOptionMap.get(rule.requiredTrait)} />
+                        </div>
+                        <button type="button" disabled={busy} aria-label={`Remove rule ${formatCategoryRequirement(rule, traitOptionMap)}`} onClick={() => removeCategoryRequirement(index)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="manager-empty">No conditional folder rules yet.</p>}
+              </section>
+
+              <section className="rule-manager-section">
+                <div className="rule-manager-title">
+                  <span>
+                    <Layers3 size={16} />
+                    Folder conflicts
+                  </span>
+                  <strong>{categoryConflicts.length}</strong>
+                </div>
+                <p>Prevent two entire folders from rendering in the same image.</p>
+                <label>
+                  First folder
+                  <select value={folderConflictDraft.first} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, first: event.target.value }))}>
+                    <option value="">Choose folder</option>
+                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Cannot appear with
+                  <select value={folderConflictDraft.second} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, second: event.target.value }))}>
+                    <option value="">Choose folder</option>
+                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
+                  </select>
+                </label>
+                <button className="rule-add" type="button" disabled={busy || !folderConflictDraft.first || !folderConflictDraft.second || folderConflictDraft.first === folderConflictDraft.second} onClick={addCategoryConflict}>
+                  <Ban size={16} />
+                  Add folder conflict
+                </button>
+                {categoryConflicts.length ? (
+                  <div className="rule-list">
+                    {categoryConflicts.map((rule, index) => (
+                      <div className="rule-row" key={makeRuleKey(rule)}>
+                        <span>{formatCategoryConflict(rule)}</span>
+                        <button type="button" disabled={busy} aria-label={`Remove rule ${formatCategoryConflict(rule)}`} onClick={() => removeCategoryConflict(index)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="manager-empty">No folder conflicts yet.</p>}
+              </section>
             </div>
           </section>
         </div>
       )}
     </main>
+  )
+}
+
+function ManagerTraitPreview({ traitKey, url, label }) {
+  const shortLabel = label?.split(' / ').at(-1) || 'Select a trait'
+  return (
+    <div className={`manager-trait-preview ${traitKey ? 'selected' : ''}`} aria-live="polite">
+      <div className="manager-trait-preview-frame">
+        {url ? (
+          <img src={url} alt={`${label} preview`} />
+        ) : traitKey ? (
+          <Loader2 className="spin" size={19} aria-label="Loading trait preview" />
+        ) : (
+          <ImagePlus size={19} aria-hidden="true" />
+        )}
+      </div>
+      <span title={label}>{shortLabel}</span>
+    </div>
+  )
+}
+
+function TraitPositionControls({ trait, onChange }) {
+  if (!trait) return <div className="trait-position-controls empty">Select a trait to position it.</div>
+  const traitKey = makeTraitKey(trait)
+  return (
+    <div className="trait-position-controls">
+      <span>
+        <small>X</small>
+        <input
+          type="number"
+          step="1"
+          value={getTraitOffset(trait, 'x')}
+          aria-label={`Horizontal position for ${getTraitMetadataName(trait)}`}
+          onChange={(event) => onChange(traitKey, 'x', event.target.value)}
+        />
+      </span>
+      <span>
+        <small>Y</small>
+        <input
+          type="number"
+          step="1"
+          value={getTraitOffset(trait, 'y')}
+          aria-label={`Vertical position for ${getTraitMetadataName(trait)}`}
+          onChange={(event) => onChange(traitKey, 'y', event.target.value)}
+        />
+      </span>
+    </div>
+  )
+}
+
+function ManagerRuleTraitPreview({ url, label }) {
+  return (
+    <div className="manager-rule-trait" title={label}>
+      <div className="manager-rule-trait-frame">
+        {url ? <img src={url} alt={`${label} preview`} /> : <Loader2 className="spin" size={15} aria-label="Loading trait preview" />}
+      </div>
+      <span>{label?.split(' / ').at(-1) || 'Trait'}</span>
+    </div>
   )
 }
 
@@ -1117,6 +1575,8 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
       originalName: trait.originalName,
       name: trait.name,
       weight: getTraitWeight(trait),
+      offsetX: getTraitOffset(trait, 'x'),
+      offsetY: getTraitOffset(trait, 'y'),
     })),
   )
   const matchesForId = (id) =>
@@ -1150,6 +1610,8 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
           originalName: trait.originalName,
           name: trait.name,
           weight: getTraitWeight(trait),
+          offsetX: getTraitOffset(trait, 'x'),
+          offsetY: getTraitOffset(trait, 'y'),
         })),
       })),
       incompatibilities: (source.incompatibilities || []).map((rule) => ({
@@ -1208,6 +1670,8 @@ function restoreProjectBackup(source, backup) {
         category: backupCategory.name,
         name: backupTrait.name,
         weight: clampDecimal(backupTrait.weight, 0, 100),
+        offsetX: Number.isFinite(Number(backupTrait.offsetX)) ? Math.round(Number(backupTrait.offsetX)) : 0,
+        offsetY: Number.isFinite(Number(backupTrait.offsetY)) ? Math.round(Number(backupTrait.offsetY)) : 0,
       }
       restoredTraitByCurrentTrait.set(currentTrait, restoredTrait)
     })
@@ -1469,14 +1933,14 @@ async function renderArtwork(source, traits, options = {}) {
     for (const trait of traits) {
       if (trait.isNone) continue
       for (const layer of trait.layers) {
-        drawPsdLayer(context, layer)
+        drawPsdLayer(context, layer, getTraitOffset(trait, 'x'), getTraitOffset(trait, 'y'))
       }
     }
   } else {
     if (source.baseImage) context.drawImage(source.baseImage, 0, 0, source.width, source.height)
     for (const trait of traits) {
       if (trait.isNone) continue
-      context.drawImage(trait.image, 0, 0, source.width, source.height)
+      context.drawImage(trait.image, getTraitOffset(trait, 'x'), getTraitOffset(trait, 'y'), source.width, source.height)
     }
   }
 
@@ -1484,12 +1948,12 @@ async function renderArtwork(source, traits, options = {}) {
   return canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
 }
 
-function drawPsdLayer(context, layer) {
+function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
   if (!hasRenderableCanvas(layer)) return
   const opacity = typeof layer.opacity === 'number' ? layer.opacity : 1
   context.save()
   context.globalAlpha = opacity
-  context.drawImage(layer.canvas, layer.left || 0, layer.top || 0)
+  context.drawImage(layer.canvas, (layer.left || 0) + offsetX, (layer.top || 0) + offsetY)
   context.restore()
 }
 
@@ -1578,7 +2042,7 @@ function buildCombinationsUpTo(categories, rules = {}, limit = Number.POSITIVE_I
   return combos
 }
 
-function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_INFINITY) {
+function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_INFINITY, timeBudgetMs = COMBO_COUNT_TIME_BUDGET_MS) {
   if (!rules.incompatibilities?.length && !rules.categoryRequirements?.length && !rules.categoryConflicts?.length) {
     let count = 1
     for (const category of categories) {
@@ -1588,17 +2052,47 @@ function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_
     return { count, capped: false }
   }
 
+  const startedAt = globalThis.performance?.now?.() ?? Date.now()
+  const incompatibilityKeys = new Set((rules.incompatibilities || []).map((rule) => makeRuleKey(rule)))
+  const categoryRequirements = new Map((rules.categoryRequirements || []).map((rule) => [rule.category, rule.requiredTrait]))
+  const categoryConflictKeys = new Set((rules.categoryConflicts || []).map((rule) => makeRuleKey(rule)))
+  let operations = 0
+  let timedOut = false
+
+  function exceededTimeBudget() {
+    operations += 1
+    if (timedOut) return true
+    if ((operations & 255) !== 0) return false
+    const now = globalThis.performance?.now?.() ?? Date.now()
+    timedOut = now - startedAt >= timeBudgetMs
+    return timedOut
+  }
+
+  function isCompatible(trait, combo) {
+    if (trait.isNone) return true
+    const traitId = makeTraitKey(trait)
+    return combo.every((selectedTrait) => selectedTrait.isNone || !incompatibilityKeys.has(makeRuleKey({ first: traitId, second: makeTraitKey(selectedTrait) })))
+  }
+
+  function shouldApply(category, combo) {
+    const requirement = categoryRequirements.get(category.name)
+    if (requirement && !combo.some((trait) => makeTraitKey(trait) === requirement)) return false
+    return !combo.some((trait) => !trait.isNone && categoryConflictKeys.has(makeRuleKey({ first: category.name, second: trait.category })))
+  }
+
   function countFrom(categoryIndex, combo) {
-    if (categoryIndex >= categories.length) return findCombinationViolation(combo, rules) ? 0 : 1
+    if (exceededTimeBudget()) return 0
+    if (categoryIndex >= categories.length) return 1
     const category = categories[categoryIndex]
-    if (!shouldApplyCategory(category, combo, rules.categoryRequirements, rules.categoryConflicts)) {
+    if (!shouldApply(category, combo)) {
       return countFrom(categoryIndex + 1, combo)
     }
 
     let count = 0
     for (const trait of getCategoryChoices(category)) {
-      if (isTraitCompatibleWithCombo(trait, combo, rules.incompatibilities)) {
+      if (isCompatible(trait, combo)) {
         count += countFrom(categoryIndex + 1, [...combo, trait])
+        if (timedOut) break
         if (count > limit) return count
       }
     }
@@ -1606,7 +2100,8 @@ function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_
   }
 
   const count = countFrom(0, [])
-  return { count: Math.min(count, limit), capped: count > limit }
+  if (timedOut) return { count: Math.min(count, limit), capped: true, approximate: true }
+  return { count: Math.min(count, limit), capped: count > limit, approximate: false }
 }
 
 function isTraitCompatibleWithCombo(trait, combo, incompatibilities = []) {
@@ -1663,6 +2158,11 @@ function getTraitWeight(trait) {
   return Number.isFinite(weight) ? Math.max(0, weight) : 0
 }
 
+function getTraitOffset(trait, axis) {
+  const value = Number(axis === 'y' ? trait?.offsetY : trait?.offsetX)
+  return Number.isFinite(value) ? Math.round(value) : 0
+}
+
 function addNoTraitChance(category, noTraitChance) {
   const currentTotal = category.traits.reduce((total, trait) => total + getTraitWeight(trait), 0)
   const traitBudget = 100 - noTraitChance
@@ -1708,6 +2208,11 @@ function makeTraitKey(trait) {
   return getTraitId(trait)
 }
 
+function findTraitByKey(source, key) {
+  if (!key) return null
+  return source.categories.flatMap((category) => category.traits).find((trait) => makeTraitKey(trait) === key) || null
+}
+
 function makeTraitId(category, name) {
   return `${category}::${name}`
 }
@@ -1746,6 +2251,7 @@ function formatTraitKey(key, traitOptionMap = new Map()) {
 }
 
 function formatComboCount(info) {
+  if (info?.approximate) return info.count ? `${info.count.toLocaleString()}+ checked` : 'Large rule set'
   if (!info?.count) return 'No source'
   return `${info.count.toLocaleString()}${info.capped ? '+' : ''} combos`
 }
