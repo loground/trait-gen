@@ -31,6 +31,7 @@ const COMBO_COUNT_TIME_BUDGET_MS = 32
 const METADATA_FILE_NAME = 'metadata-file.csv'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
+const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
   webp: { mime: 'image/webp', extension: 'webp', label: 'WebP' },
@@ -61,6 +62,7 @@ function App() {
   const [status, setStatus] = useState('Drop in a PSD or trait folders to begin.')
   const [busy, setBusy] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
+  const [previewBackground, setPreviewBackground] = useState('#ffffff')
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
@@ -188,7 +190,7 @@ function App() {
         const signature = `${getTraitOffset(trait, 'x')}:${getTraitOffset(trait, 'y')}`
         if (nextUrls[key] && nextSignatures[key] === signature) continue
         if (nextUrls[key]) URL.revokeObjectURL(nextUrls[key])
-        const blob = await renderArtwork(source, [trait], { renderMaxDimension: 240 })
+        const blob = await renderArtwork(source, [trait], { renderMaxDimension: 240, includeBase: false })
         const url = URL.createObjectURL(blob)
         if (cancelled) {
           URL.revokeObjectURL(url)
@@ -227,7 +229,7 @@ function App() {
 
     timer = window.setTimeout(async () => {
       try {
-        const blob = await renderArtwork(source, [firstTrait, secondTrait], { renderMaxDimension: 360 })
+        const blob = await renderArtwork(source, [firstTrait, secondTrait], { renderMaxDimension: 360, includeBase: false })
         const url = URL.createObjectURL(blob)
         if (cancelled) {
           URL.revokeObjectURL(url)
@@ -266,7 +268,7 @@ function App() {
           { ...firstTrait, offsetX: positionRuleDraft.firstX, offsetY: positionRuleDraft.firstY },
           { ...secondTrait, offsetX: positionRuleDraft.secondX, offsetY: positionRuleDraft.secondY },
         ]
-        const blob = await renderArtwork({ ...source, positionRules: [] }, positionedTraits, { renderMaxDimension: 360 })
+        const blob = await renderArtwork({ ...source, positionRules: [] }, positionedTraits, { renderMaxDimension: 360, includeBase: false })
         const url = URL.createObjectURL(blob)
         if (cancelled) {
           URL.revokeObjectURL(url)
@@ -301,7 +303,7 @@ function App() {
 
     timer = window.setTimeout(async () => {
       try {
-        const blob = await renderArtwork(source, [trait], { renderMaxDimension: 640 })
+        const blob = await renderArtwork(source, [trait], { renderMaxDimension: 640, includeBase: false })
         const url = URL.createObjectURL(blob)
         if (cancelled) {
           URL.revokeObjectURL(url)
@@ -1069,7 +1071,7 @@ function App() {
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ '--preview-background': previewBackground }}>
       <section className="topbar">
         <div>
           <p className="eyebrow">NFT trait combiner</p>
@@ -1437,6 +1439,31 @@ function App() {
                       <p className="eyebrow">Selected trait</p>
                       <h3>{getTraitMetadataName(traitEditorTrait)}</h3>
                     </header>
+                    <div className="preview-background-setting trait-editor-background-setting">
+                      <span>Preview background</span>
+                      <div className="preview-background-options" role="group" aria-label="Preview background color">
+                        {PREVIEW_BACKGROUNDS.map((color) => (
+                          <button
+                            className={previewBackground.toLowerCase() === color ? 'active' : ''}
+                            type="button"
+                            aria-label={`Use ${color} preview background`}
+                            title={color}
+                            style={{ '--swatch-color': color }}
+                            onClick={() => setPreviewBackground(color)}
+                            key={color}
+                          />
+                        ))}
+                        <label className="preview-color-custom" title="Custom preview background">
+                          <input
+                            type="color"
+                            value={previewBackground}
+                            aria-label="Custom preview background color"
+                            onChange={(event) => setPreviewBackground(event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <small>Preview only. Exported images are unchanged.</small>
+                    </div>
                     <div
                       className="trait-inspector-preview"
                       onPointerDown={(event) => handleTraitPreviewPointerDown(event, traitEditorTrait)}
@@ -2299,6 +2326,7 @@ function stripCommonRoot(files) {
 
 async function renderArtwork(source, traits, options = {}) {
   const renderLimit = Number(options.renderMaxDimension) || 0
+  const includeBase = options.includeBase !== false
   const longestSourceSide = Math.max(source.width, source.height)
   const renderScale = renderLimit && longestSourceSide > renderLimit ? renderLimit / longestSourceSide : 1
   const canvas = document.createElement('canvas')
@@ -2314,8 +2342,10 @@ async function renderArtwork(source, traits, options = {}) {
   const positionOverrides = getPairPositionOverrides(traits, source.positionRules)
 
   if (source.type === 'psd') {
-    for (const layer of [...source.baseLayers].reverse()) {
-      drawPsdLayer(context, layer)
+    if (includeBase) {
+      for (const layer of [...source.baseLayers].reverse()) {
+        drawPsdLayer(context, layer)
+      }
     }
     for (const trait of traits) {
       if (trait.isNone) continue
@@ -2325,7 +2355,7 @@ async function renderArtwork(source, traits, options = {}) {
       }
     }
   } else {
-    if (source.baseImage) context.drawImage(source.baseImage, 0, 0, source.width, source.height)
+    if (includeBase && source.baseImage) context.drawImage(source.baseImage, 0, 0, source.width, source.height)
     for (const trait of traits) {
       if (trait.isNone) continue
       const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
