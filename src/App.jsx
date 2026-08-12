@@ -87,7 +87,7 @@ function App() {
   const [renderOrderRename, setRenderOrderRename] = useState(null)
   const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
   const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
-  const [positionPairPreviewUrl, setPositionPairPreviewUrl] = useState('')
+  const [activePositionTraitSide, setActivePositionTraitSide] = useState('first')
   const [traitEditorPreviewUrl, setTraitEditorPreviewUrl] = useState('')
   const [activeDropTarget, setActiveDropTarget] = useState('')
   const [ruleDraft, setRuleDraft] = useState(emptyRuleDraft)
@@ -108,9 +108,9 @@ function App() {
   const managerPreviewUrlsRef = useRef({})
   const managerPreviewSignaturesRef = useRef({})
   const managerPairPreviewUrlRef = useRef('')
-  const positionPairPreviewUrlRef = useRef('')
   const traitEditorPreviewUrlRef = useRef('')
   const traitPreviewDragRef = useRef(null)
+  const positionCanvasDragRef = useRef(null)
   const draggedTraitRef = useRef(null)
   const traitFolderDragOccurredRef = useRef(false)
   const walletCheckRef = useRef(0)
@@ -282,7 +282,6 @@ function App() {
       previewRequestRef.current += 1
       Object.values(managerPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url))
       if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
-      if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
       if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
       samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     },
@@ -376,45 +375,6 @@ function App() {
       if (timer) window.clearTimeout(timer)
     }
   }, [traitManagerOpen, source, ruleDraft.first, ruleDraft.second])
-
-  useEffect(() => {
-    let cancelled = false
-    let timer = null
-    const firstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
-    const secondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
-
-    if (!traitManagerOpen || !source || !firstTrait || !secondTrait) {
-      if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
-      positionPairPreviewUrlRef.current = ''
-      setPositionPairPreviewUrl('')
-      return undefined
-    }
-
-    timer = window.setTimeout(async () => {
-      try {
-        const positionedTraits = [
-          { ...firstTrait, offsetX: positionRuleDraft.firstX, offsetY: positionRuleDraft.firstY },
-          { ...secondTrait, offsetX: positionRuleDraft.secondX, offsetY: positionRuleDraft.secondY },
-        ]
-        const blob = await renderArtwork({ ...source, positionRules: [] }, positionedTraits, { renderMaxDimension: 360, includeBase: false })
-        const url = URL.createObjectURL(blob)
-        if (cancelled) {
-          URL.revokeObjectURL(url)
-          return
-        }
-        if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
-        positionPairPreviewUrlRef.current = url
-        setPositionPairPreviewUrl(url)
-      } catch {
-        if (!cancelled) setPositionPairPreviewUrl('')
-      }
-    }, 120)
-
-    return () => {
-      cancelled = true
-      if (timer) window.clearTimeout(timer)
-    }
-  }, [traitManagerOpen, source, positionRuleDraft])
 
   useEffect(() => {
     setTraitTitleEditing(false)
@@ -1077,6 +1037,7 @@ function App() {
 
   function selectPositionRuleTrait(side, traitKey) {
     const trait = source ? findTraitByKey(source, traitKey) : null
+    if (traitKey) setActivePositionTraitSide(side)
     setPositionRuleDraft((current) => ({
       ...current,
       [side]: traitKey,
@@ -1097,6 +1058,41 @@ function App() {
     const limit = Math.max(source.width, source.height) * 2
     const offset = Math.round(Math.max(-limit, Math.min(limit, numericValue)))
     setPositionRuleDraft((current) => ({ ...current, [`${side}${axis.toUpperCase()}`]: offset }))
+  }
+
+  function handlePositionCanvasPointerDown(event) {
+    if (!source || busy || !positionRuleDraft[activePositionTraitSide]) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    positionCanvasDragRef.current = {
+      pointerId: event.pointerId,
+      side: activePositionTraitSide,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: Number(positionRuleDraft[`${activePositionTraitSide}X`]) || 0,
+      offsetY: Number(positionRuleDraft[`${activePositionTraitSide}Y`]) || 0,
+    }
+  }
+
+  function handlePositionCanvasPointerMove(event) {
+    const drag = positionCanvasDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId || !source) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const displayScale = Math.max(0.0001, Math.min(bounds.width / source.width, bounds.height / source.height))
+    const limit = Math.max(source.width, source.height) * 2
+    const offsetX = Math.round(Math.max(-limit, Math.min(limit, drag.offsetX + (event.clientX - drag.startX) / displayScale)))
+    const offsetY = Math.round(Math.max(-limit, Math.min(limit, drag.offsetY + (event.clientY - drag.startY) / displayScale)))
+    setPositionRuleDraft((current) => ({
+      ...current,
+      [`${drag.side}X`]: offsetX,
+      [`${drag.side}Y`]: offsetY,
+    }))
+  }
+
+  function handlePositionCanvasPointerUp(event) {
+    if (positionCanvasDragRef.current?.pointerId !== event.pointerId) return
+    positionCanvasDragRef.current = null
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
   }
 
   async function addPositionRule() {
@@ -1492,6 +1488,17 @@ function App() {
   const traitEditorTraitIndex = traitEditorCategory?.traits?.length ? Math.min(selectedTraitIndex, traitEditorCategory.traits.length - 1) : 0
   const traitEditorTrait = traitEditorCategory?.traits?.[traitEditorTraitIndex] || null
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
+  const positionFirstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
+  const positionSecondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
+
+  function getPositionCanvasTransform(side, trait) {
+    if (!source || !trait) return 'none'
+    const offsetX = Number(positionRuleDraft[`${side}X`]) || 0
+    const offsetY = Number(positionRuleDraft[`${side}Y`]) || 0
+    const deltaX = offsetX - getTraitOffset(trait, 'x')
+    const deltaY = offsetY - getTraitOffset(trait, 'y')
+    return `translate(${(deltaX / source.width) * 100}%, ${(deltaY / source.height) * 100}%)`
+  }
 
   if (TOKEN_GATE_ENABLED && walletGate.status !== 'holder') {
     const checkingWallet = walletGate.status === 'connecting' || walletGate.status === 'checking'
@@ -2396,17 +2403,61 @@ function App() {
                   />
                 </div>
                 {positionRuleDraft.first && positionRuleDraft.second && (
-                  <div className="pair-position-preview">
+                  <div className="pair-position-preview interactive-position-preview">
                     <div className="pair-position-preview-header">
-                      <span>Position rule preview</span>
-                      <small>These coordinates apply only to this pair</small>
+                      <span>Drag to position both traits</span>
+                      <small>Select a trait, then drag it in the canvas</small>
                     </div>
-                    <div className="pair-position-preview-frame">
-                      {positionPairPreviewUrl ? (
-                        <img src={positionPairPreviewUrl} alt="Pair-specific position preview" />
-                      ) : (
+                    <div className="position-preview-trait-tabs" role="group" aria-label="Trait to reposition">
+                      <button
+                        className={activePositionTraitSide === 'first' ? 'active' : ''}
+                        type="button"
+                        onClick={() => setActivePositionTraitSide('first')}
+                      >
+                        <span>First trait</span>
+                        <strong>{traitOptionMap.get(positionRuleDraft.first)?.split(' / ').at(-1)}</strong>
+                        <small>X {Number(positionRuleDraft.firstX) || 0} · Y {Number(positionRuleDraft.firstY) || 0}</small>
+                      </button>
+                      <button
+                        className={activePositionTraitSide === 'second' ? 'active' : ''}
+                        type="button"
+                        onClick={() => setActivePositionTraitSide('second')}
+                      >
+                        <span>Second trait</span>
+                        <strong>{traitOptionMap.get(positionRuleDraft.second)?.split(' / ').at(-1)}</strong>
+                        <small>X {Number(positionRuleDraft.secondX) || 0} · Y {Number(positionRuleDraft.secondY) || 0}</small>
+                      </button>
+                    </div>
+                    <div
+                      className="pair-position-preview-frame interactive"
+                      aria-label={`Drag ${activePositionTraitSide} trait to reposition it`}
+                      onPointerDown={handlePositionCanvasPointerDown}
+                      onPointerMove={handlePositionCanvasPointerMove}
+                      onPointerUp={handlePositionCanvasPointerUp}
+                      onPointerCancel={handlePositionCanvasPointerUp}
+                    >
+                      {managerPreviewUrls[positionRuleDraft.first] && (
+                        <img
+                          className={`position-preview-layer ${activePositionTraitSide === 'first' ? 'active' : ''}`}
+                          src={managerPreviewUrls[positionRuleDraft.first]}
+                          alt=""
+                          draggable="false"
+                          style={{ transform: getPositionCanvasTransform('first', positionFirstTrait) }}
+                        />
+                      )}
+                      {managerPreviewUrls[positionRuleDraft.second] && (
+                        <img
+                          className={`position-preview-layer ${activePositionTraitSide === 'second' ? 'active' : ''}`}
+                          src={managerPreviewUrls[positionRuleDraft.second]}
+                          alt=""
+                          draggable="false"
+                          style={{ transform: getPositionCanvasTransform('second', positionSecondTrait) }}
+                        />
+                      )}
+                      {!managerPreviewUrls[positionRuleDraft.first] && !managerPreviewUrls[positionRuleDraft.second] && (
                         <Loader2 className="spin" size={22} aria-label="Loading position rule preview" />
                       )}
+                      <span className="position-drag-hint">Dragging {activePositionTraitSide === 'first' ? 'first' : 'second'} trait</span>
                     </div>
                   </div>
                 )}

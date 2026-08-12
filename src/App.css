@@ -851,6 +851,106 @@ button:disabled {
   object-fit: contain;
 }
 
+.interactive-position-preview {
+  padding: 14px;
+}
+
+.position-preview-trait-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.position-preview-trait-tabs button {
+  min-width: 0;
+  min-height: 60px;
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  padding: 8px 10px;
+  color: #52647a;
+  background: #fff;
+  border-color: #ced7e2;
+  text-align: left;
+}
+
+.position-preview-trait-tabs button.active {
+  color: #075a55;
+  background: #e9f7f4;
+  border-color: #72b8ae;
+  box-shadow: 0 0 0 2px rgba(13, 107, 103, 0.1);
+}
+
+.position-preview-trait-tabs span,
+.position-preview-trait-tabs small {
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.position-preview-trait-tabs strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: #233143;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-position-preview-frame.interactive {
+  position: relative;
+  width: min(360px, 100%);
+  isolation: isolate;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  background:
+    linear-gradient(45deg, #edf1f5 25%, transparent 25%),
+    linear-gradient(-45deg, #edf1f5 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #edf1f5 75%),
+    linear-gradient(-45deg, transparent 75%, #edf1f5 75%),
+    var(--preview-background, #ffffff);
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+}
+
+.pair-position-preview-frame.interactive:active {
+  cursor: grabbing;
+}
+
+.pair-position-preview-frame.interactive .position-preview-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  box-shadow: none;
+  pointer-events: none;
+  opacity: 0.72;
+  will-change: transform;
+}
+
+.pair-position-preview-frame.interactive .position-preview-layer.active {
+  z-index: 2;
+  opacity: 1;
+}
+
+.position-drag-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  padding: 4px 7px;
+  color: #fff;
+  background: rgba(24, 32, 43, 0.72);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
 .manager-trait-preview {
   min-width: 0;
   display: grid;
