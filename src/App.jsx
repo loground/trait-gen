@@ -81,8 +81,9 @@ function App() {
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
   const [activeRuleManagerTab, setActiveRuleManagerTab] = useState('trait-pairs')
-  const [expandedCategoryIndex, setExpandedCategoryIndex] = useState(null)
+  const [expandedCategoryIndices, setExpandedCategoryIndices] = useState([])
   const [traitDropCategoryIndex, setTraitDropCategoryIndex] = useState(null)
+  const [traitTitleEditing, setTraitTitleEditing] = useState(false)
   const [renderOrderRename, setRenderOrderRename] = useState(null)
   const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
   const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
@@ -111,6 +112,7 @@ function App() {
   const traitEditorPreviewUrlRef = useRef('')
   const traitPreviewDragRef = useRef(null)
   const draggedTraitRef = useRef(null)
+  const traitFolderDragOccurredRef = useRef(false)
   const walletCheckRef = useRef(0)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
 
@@ -415,6 +417,10 @@ function App() {
   }, [traitManagerOpen, source, positionRuleDraft])
 
   useEffect(() => {
+    setTraitTitleEditing(false)
+  }, [selectedCategoryIndex, selectedTraitIndex])
+
+  useEffect(() => {
     let cancelled = false
     let timer = null
     const category = source?.categories?.[selectedCategoryIndex]
@@ -475,6 +481,7 @@ function App() {
       })
       const parsed = parsePsd(psd, file.name)
       setSource(parsed)
+      setExpandedCategoryIndices([])
       setSelectedCategoryIndex(0)
       setRuleDraft(emptyRuleDraft)
       setRuleFolderDraft(emptyRuleFolderDraft)
@@ -562,6 +569,7 @@ function App() {
     try {
       const parsed = await parseFolders(files, baseFileRef.current)
       setSource(parsed)
+      setExpandedCategoryIndices([])
       setSelectedCategoryIndex(0)
       setRuleDraft(emptyRuleDraft)
       setRuleFolderDraft(emptyRuleFolderDraft)
@@ -659,6 +667,44 @@ function App() {
     })
   }
 
+  async function previewCurrentCombination() {
+    if (!source || busy) return
+    setBusy(true)
+    setStatus('Refreshing combination preview...')
+    try {
+      await renderPreview(source)
+      setStatus('Combination preview refreshed.')
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not refresh the combination preview.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function previewSingleTrait(categoryIndex, traitIndex) {
+    if (!source || busy || traitFolderDragOccurredRef.current) return
+    const trait = source.categories[categoryIndex]?.traits[traitIndex]
+    if (!trait) return
+    if (previewTimerRef.current) {
+      window.clearTimeout(previewTimerRef.current)
+      previewTimerRef.current = null
+    }
+    const requestId = previewRequestRef.current + 1
+    previewRequestRef.current = requestId
+    setStatus(`Previewing ${getTraitMetadataName(trait)}.`)
+    try {
+      const blob = await renderArtwork(source, [trait], { renderMaxDimension: PREVIEW_MAX_DIMENSION })
+      if (requestId !== previewRequestRef.current) return
+      const url = URL.createObjectURL(blob)
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current)
+        return url
+      })
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not preview that trait.'))
+    }
+  }
+
   function schedulePreview(activeSource) {
     if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
     previewTimerRef.current = window.setTimeout(() => {
@@ -684,11 +730,11 @@ function App() {
       if (current === nextIndex) return index
       return current
     })
-    setExpandedCategoryIndex((current) => {
-      if (current === index) return nextIndex
-      if (current === nextIndex) return index
-      return current
-    })
+    setExpandedCategoryIndices((current) => current.map((categoryIndex) => {
+      if (categoryIndex === index) return nextIndex
+      if (categoryIndex === nextIndex) return index
+      return categoryIndex
+    }))
     setStatus(`Render order updated: ${categories.map((item) => item.name).join(' -> ')}.`)
     await renderPreview(nextSource)
   }
@@ -969,6 +1015,7 @@ function App() {
       event.preventDefault()
       return
     }
+    traitFolderDragOccurredRef.current = true
     draggedTraitRef.current = { categoryIndex, traitIndex }
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', `${categoryIndex}:${traitIndex}`)
@@ -985,6 +1032,9 @@ function App() {
   function finishTraitFolderDrag() {
     draggedTraitRef.current = null
     setTraitDropCategoryIndex(null)
+    window.setTimeout(() => {
+      traitFolderDragOccurredRef.current = false
+    }, 0)
   }
 
   async function handleTraitFolderDrop(event, categoryIndex) {
@@ -992,7 +1042,7 @@ function App() {
     const draggedTrait = draggedTraitRef.current
     finishTraitFolderDrag()
     if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
-    setExpandedCategoryIndex(categoryIndex)
+    setExpandedCategoryIndices((current) => (current.includes(categoryIndex) ? current : [...current, categoryIndex]))
     await moveTraitToCategory(draggedTrait.categoryIndex, draggedTrait.traitIndex, categoryIndex)
   }
 
@@ -1557,6 +1607,10 @@ function App() {
               <span>Render order</span>
               <div className="render-order-header-actions">
                 <span>{formatComboCount(maxEditionsInfo)}</span>
+                <button type="button" onClick={previewCurrentCombination} disabled={busy || !source}>
+                  <Eye size={13} />
+                  Preview
+                </button>
                 <button type="button" onClick={addCategory} disabled={busy || !source}>
                   <Plus size={13} />
                   Add folder
@@ -1598,12 +1652,14 @@ function App() {
                     <div className="trait-actions">
                       <strong>{item.enabled ? item.count : 0}/{item.total}</strong>
                       <button
-                        className={expandedCategoryIndex === index ? 'active' : ''}
+                        className={expandedCategoryIndices.includes(index) ? 'active' : ''}
                         type="button"
-                        aria-label={`${expandedCategoryIndex === index ? 'Hide' : 'Show'} traits in ${item.name}`}
-                        aria-expanded={expandedCategoryIndex === index}
+                        aria-label={`${expandedCategoryIndices.includes(index) ? 'Hide' : 'Show'} traits in ${item.name}`}
+                        aria-expanded={expandedCategoryIndices.includes(index)}
                         disabled={busy}
-                        onClick={() => setExpandedCategoryIndex((current) => (current === index ? null : index))}
+                        onClick={() => setExpandedCategoryIndices((current) => (
+                          current.includes(index) ? current.filter((categoryIndex) => categoryIndex !== index) : [...current, index]
+                        ))}
                       >
                         <Eye size={14} />
                       </button>
@@ -1623,7 +1679,7 @@ function App() {
                       </button>
                     </div>
                   </div>
-                  {expandedCategoryIndex === index && (
+                  {expandedCategoryIndices.includes(index) && (
                     <div className="folder-trait-list" aria-label={`Traits in ${item.name}`}>
                       {source.categories[index].traits.length ? source.categories[index].traits.map((trait, traitIndex) => (
                         <div
@@ -1631,6 +1687,15 @@ function App() {
                           draggable={!busy}
                           onDragStart={(event) => startTraitFolderDrag(event, index, traitIndex)}
                           onDragEnd={finishTraitFolderDrag}
+                          onClick={() => previewSingleTrait(index, traitIndex)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              previewSingleTrait(index, traitIndex)
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
                           title={`Drag ${getTraitMetadataName(trait)} to another folder`}
                           key={`${getTraitId(trait)}-${traitIndex}`}
                         >
@@ -1956,7 +2021,24 @@ function App() {
                   <>
                     <header className="trait-inspector-header">
                       <p className="eyebrow">Selected trait</p>
-                      <h3>{getTraitMetadataName(traitEditorTrait)}</h3>
+                      {traitTitleEditing ? (
+                        <input
+                          className="trait-title-input"
+                          value={traitEditorTrait.name}
+                          autoFocus
+                          disabled={busy || traitEditorCategory.enabled === false}
+                          aria-label="Edit selected trait name"
+                          onChange={(event) => renameTrait(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
+                          onBlur={() => setTraitTitleEditing(false)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === 'Escape') event.currentTarget.blur()
+                          }}
+                        />
+                      ) : (
+                        <button className="trait-title-button" type="button" disabled={busy || traitEditorCategory.enabled === false} onClick={() => setTraitTitleEditing(true)}>
+                          {getTraitMetadataName(traitEditorTrait)}
+                        </button>
+                      )}
                     </header>
                     <div className="preview-background-setting trait-editor-background-setting">
                       <span>Preview background</span>
