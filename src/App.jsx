@@ -8,16 +8,20 @@ import {
   Ban,
   Calculator,
   CheckCircle2,
+  Eye,
   FolderOpen,
   ImagePlus,
   Layers3,
   Loader2,
+  LogOut,
   Play,
+  Plus,
   RotateCcw,
   Shuffle,
   SlidersHorizontal,
   Trash2,
   Upload,
+  Wallet,
   X,
 } from 'lucide-react'
 import './App.css'
@@ -32,6 +36,10 @@ const METADATA_FILE_NAME = 'metadata-file.csv'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
 const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
+const HOODCHAN_CONTRACT_ADDRESS = '0x774db2207d26570f5638028839c816702a40abc2'
+const HOODCHAN_COLLECTION_URL = 'https://opensea.io/collection/h00dchan'
+const ROBINHOOD_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com'
+const TOKEN_GATE_ENABLED = false
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
   webp: { mime: 'image/webp', extension: 'webp', label: 'WebP' },
@@ -62,13 +70,17 @@ function App() {
   const [status, setStatus] = useState('Drop in a PSD or trait folders to begin.')
   const [busy, setBusy] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
+  const [samplePreviews, setSamplePreviews] = useState([])
+  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
+  const [walletGate, setWalletGate] = useState({ status: 'idle', address: '', balance: 0, message: '' })
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
   const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
+  const [activeRuleManagerTab, setActiveRuleManagerTab] = useState('trait-pairs')
   const [renderOrderRename, setRenderOrderRename] = useState(null)
   const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
   const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
@@ -84,15 +96,19 @@ function App() {
   const psdInputRef = useRef(null)
   const baseInputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const traitFilesInputRef = useRef(null)
+  const traitUploadCategoryRef = useRef(null)
   const baseFileRef = useRef(null)
   const previewTimerRef = useRef(null)
   const previewRequestRef = useRef(0)
+  const samplePreviewUrlsRef = useRef([])
   const managerPreviewUrlsRef = useRef({})
   const managerPreviewSignaturesRef = useRef({})
   const managerPairPreviewUrlRef = useRef('')
   const positionPairPreviewUrlRef = useRef('')
   const traitEditorPreviewUrlRef = useRef('')
   const traitPreviewDragRef = useRef(null)
+  const walletCheckRef = useRef(0)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
 
   const combinationStructureKey = getCombinationStructureKey(source)
@@ -108,6 +124,7 @@ function App() {
   const maxEditionsInfo = maxEditionsCacheRef.current.value
   const maxEditions = maxEditionsInfo.count
   const maxEditionsCapped = maxEditionsInfo.capped
+  const samplePreviewCount = source ? Math.min(16, Math.max(1, maxEditions)) : 16
 
   const sourceSummary = useMemo(() => {
     if (!source) return []
@@ -149,6 +166,111 @@ function App() {
     [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements],
   )
 
+  async function verifyWalletAccess(address) {
+    const requestId = walletCheckRef.current + 1
+    walletCheckRef.current = requestId
+    setWalletGate({ status: 'checking', address, balance: 0, message: 'Checking HOODCHAN ownership...' })
+    try {
+      const balance = await readHoodchanBalance(address)
+      if (requestId !== walletCheckRef.current) return false
+      if (balance > 0n) {
+        setWalletGate({ status: 'holder', address, balance: Number(balance), message: '' })
+        return true
+      }
+      setWalletGate({ status: 'denied', address, balance: 0, message: 'This wallet does not hold a HOODCHAN NFT.' })
+      return false
+    } catch (error) {
+      if (requestId !== walletCheckRef.current) return false
+      setWalletGate({ status: 'error', address, balance: 0, message: getErrorMessage(error, 'Could not verify NFT ownership.') })
+      return false
+    }
+  }
+
+  async function connectWallet() {
+    const provider = window.ethereum
+    if (!provider?.request) {
+      setWalletGate({ status: 'error', address: '', balance: 0, message: 'Open this page in an EVM wallet browser or install a browser wallet.' })
+      return
+    }
+    setWalletGate((current) => ({ ...current, status: 'connecting', message: 'Connecting wallet...' }))
+    try {
+      if (walletGate.address) {
+        try {
+          await provider.request({
+            method: 'wallet_requestPermissions',
+            params: [{ eth_accounts: {} }],
+          })
+        } catch (permissionError) {
+          if (permissionError?.code === 4001) throw permissionError
+          const unsupportedPermissionMethod = [-32601, -32004, 4200].includes(permissionError?.code)
+          if (!unsupportedPermissionMethod) throw permissionError
+        }
+      }
+      const accounts = await provider.request({ method: 'eth_requestAccounts' })
+      const address = accounts?.[0]
+      if (!address) throw new Error('No wallet account was selected.')
+      await verifyWalletAccess(address)
+    } catch (error) {
+      const message = error?.code === 4001 ? 'Wallet connection was cancelled.' : getErrorMessage(error, 'Could not connect the wallet.')
+      setWalletGate({ status: 'error', address: '', balance: 0, message })
+    }
+  }
+
+  async function disconnectWallet() {
+    walletCheckRef.current += 1
+    const provider = window.ethereum
+    try {
+      await provider?.request?.({
+        method: 'wallet_revokePermissions',
+        params: [{ eth_accounts: {} }],
+      })
+    } catch {
+      // Some injected wallets do not support permission revocation. The local
+      // session is still cleared so the token gate closes immediately.
+    }
+    setWalletGate({ status: 'idle', address: '', balance: 0, message: '' })
+  }
+
+  async function ensureHolderAccess() {
+    if (!TOKEN_GATE_ENABLED) return true
+    if (walletGate.status !== 'holder' || !walletGate.address) return false
+    try {
+      const balance = await readHoodchanBalance(walletGate.address)
+      if (balance > 0n) return true
+      setWalletGate({ status: 'denied', address: walletGate.address, balance: 0, message: 'This wallet no longer holds a HOODCHAN NFT.' })
+    } catch (error) {
+      setWalletGate({ status: 'error', address: walletGate.address, balance: 0, message: getErrorMessage(error, 'Could not verify NFT ownership.') })
+    }
+    return false
+  }
+
+  useEffect(() => {
+    if (!TOKEN_GATE_ENABLED) return undefined
+    const provider = window.ethereum
+    if (!provider?.request) return undefined
+    let active = true
+    const handleAccountsChanged = (accounts = []) => {
+      walletCheckRef.current += 1
+      const address = accounts[0]
+      if (!address) {
+        setWalletGate({ status: 'idle', address: '', balance: 0, message: '' })
+        return
+      }
+      verifyWalletAccess(address)
+    }
+
+    provider.request({ method: 'eth_accounts' })
+      .then((accounts) => {
+        if (active && accounts?.[0]) verifyWalletAccess(accounts[0])
+      })
+      .catch(() => {})
+    provider.on?.('accountsChanged', handleAccountsChanged)
+    return () => {
+      active = false
+      provider.removeListener?.('accountsChanged', handleAccountsChanged)
+    }
+  }, [])
+
   useEffect(
     () => () => {
       if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
@@ -157,6 +279,7 @@ function App() {
       if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
       if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
       if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
+      samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     },
     [],
   )
@@ -325,6 +448,7 @@ function App() {
 
   async function importPsdFile(file) {
     if (!file) return
+    if (!(await ensureHolderAccess())) return
     if (!file.name.toLowerCase().endsWith('.psd') && file.type !== 'image/vnd.adobe.photoshop') {
       setStatus('Drop a PSD file into Single PSD.')
       return
@@ -368,8 +492,9 @@ function App() {
     event.target.value = ''
   }
 
-  function selectBaseFile(file) {
+  async function selectBaseFile(file) {
     if (!file) return
+    if (!(await ensureHolderAccess())) return
     if (!IMAGE_TYPES.includes(file.type)) {
       setStatus('Drop a PNG, JPG, or WebP image into Base image.')
       return
@@ -381,7 +506,7 @@ function App() {
 
   async function handleBaseUpload(event) {
     const file = event.target.files?.[0]
-    selectBaseFile(file)
+    await selectBaseFile(file)
     event.target.value = ''
   }
 
@@ -409,12 +534,25 @@ function App() {
       return
     }
     if (target === 'psd') await importPsdFile(file)
-    if (target === 'base') selectBaseFile(file)
+    if (target === 'base') await selectBaseFile(file)
+    if (target === 'preview') {
+      if (file.name.toLowerCase().endsWith('.psd') || file.type === 'image/vnd.adobe.photoshop') {
+        await importPsdFile(file)
+      } else if (IMAGE_TYPES.includes(file.type)) {
+        await selectBaseFile(file)
+      } else {
+        setStatus('Drop a PSD, PNG, JPG, or WebP file into the preview area.')
+      }
+    }
   }
 
   async function handleFolderUpload(event) {
     const files = Array.from(event.target.files || [])
     if (!files.length) return
+    if (!(await ensureHolderAccess())) {
+      event.target.value = ''
+      return
+    }
 
     setBusy(true)
     setStatus('Reading folder traits...')
@@ -433,6 +571,69 @@ function App() {
     } finally {
       setBusy(false)
       event.target.value = ''
+    }
+  }
+
+  function chooseTraitFiles(categoryIndex) {
+    if (!source || busy || !source.categories[categoryIndex]) return
+    traitUploadCategoryRef.current = categoryIndex
+    traitFilesInputRef.current?.click()
+  }
+
+  async function handleTraitFilesUpload(event) {
+    const files = Array.from(event.target.files || [])
+    const categoryIndex = traitUploadCategoryRef.current
+    event.target.value = ''
+    traitUploadCategoryRef.current = null
+    if (!files.length || !source || categoryIndex === null || !source.categories[categoryIndex]) return
+    if (!(await ensureHolderAccess())) return
+
+    const imageFiles = files.filter((file) => IMAGE_TYPES.includes(file.type))
+    if (!imageFiles.length) {
+      setStatus('Choose PNG, JPG, or WebP trait images.')
+      return
+    }
+
+    setBusy(true)
+    const category = source.categories[categoryIndex]
+    setStatus(`Adding ${imageFiles.length} ${imageFiles.length === 1 ? 'trait' : 'traits'} to ${category.name}...`)
+    try {
+      const existingIds = new Set(source.categories.flatMap((item) => item.traits.map((trait) => getTraitId(trait))))
+      const addedTraits = []
+      for (const file of imageFiles) {
+        const originalName = cleanName(file.name.replace(/\.[^.]+$/, '')) || 'Untitled'
+        let suffix = 1
+        let id = makeTraitId(category.name, file.name)
+        while (existingIds.has(id)) {
+          suffix += 1
+          id = makeTraitId(category.name, `${file.name}#${suffix}`)
+        }
+        existingIds.add(id)
+        addedTraits.push({
+          type: 'image',
+          id,
+          category: category.name,
+          originalName,
+          name: originalName,
+          weight: 1,
+          image: await loadImageFromFile(file),
+          fileName: file.name,
+        })
+      }
+
+      const categories = source.categories.map((item, index) => (
+        index === categoryIndex ? { ...item, traits: [...item.traits, ...addedTraits] } : item
+      ))
+      const nextSource = { ...source, categories }
+      setSource(nextSource)
+      setSelectedCategoryIndex(categoryIndex)
+      setSelectedTraitIndex(categories[categoryIndex].traits.length - addedTraits.length)
+      setStatus(`Added ${addedTraits.length} ${addedTraits.length === 1 ? 'trait' : 'traits'} to ${category.name}.`)
+      await renderPreview(nextSource)
+    } catch (error) {
+      setStatus(getErrorMessage(error, `Could not add traits to ${category.name}.`))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -482,6 +683,27 @@ function App() {
     })
     setStatus(`Render order updated: ${categories.map((item) => item.name).join(' -> ')}.`)
     await renderPreview(nextSource)
+  }
+
+  function addCategory() {
+    if (!source || busy) return
+    const existingNames = new Set(source.categories.map((category) => category.name.trim().toLocaleLowerCase()))
+    let suffix = 1
+    let name = 'New folder'
+    while (existingNames.has(name.toLocaleLowerCase())) {
+      suffix += 1
+      name = `New folder ${suffix}`
+    }
+    const categoryIndex = source.categories.length
+    const nextSource = {
+      ...source,
+      categories: [...source.categories, { name, enabled: true, noneWeight: 0, traits: [] }],
+    }
+    setSource(nextSource)
+    setSelectedCategoryIndex(categoryIndex)
+    setSelectedTraitIndex(0)
+    setRenderOrderRename({ categoryIndex, value: name })
+    setStatus(`${name} added. Rename it, then move traits into it from the trait editor.`)
   }
 
   async function toggleCategory(index, enabled) {
@@ -622,6 +844,38 @@ function App() {
     schedulePreview(nextSource)
   }
 
+  async function deleteTrait(categoryIndex, traitIndex) {
+    if (!source || busy) return
+    const category = source.categories[categoryIndex]
+    const trait = category?.traits[traitIndex]
+    if (!trait) return
+    const traitName = getTraitMetadataName(trait)
+    const confirmed = window.confirm(`Are you sure you want to delete “${traitName}” from “${category.name}”?`)
+    if (!confirmed) return
+
+    const traitKey = makeTraitKey(trait)
+    const categories = source.categories.map((item, index) => (
+      index === categoryIndex
+        ? { ...item, traits: item.traits.filter((_, index) => index !== traitIndex) }
+        : item
+    ))
+    const nextSource = {
+      ...source,
+      categories,
+      incompatibilities: (source.incompatibilities || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
+      positionRules: (source.positionRules || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
+      categoryRequirements: (source.categoryRequirements || []).filter((rule) => rule.requiredTrait !== traitKey),
+    }
+    const nextTraitIndex = Math.min(traitIndex, Math.max(0, categories[categoryIndex].traits.length - 1))
+    setSource(nextSource)
+    setSelectedTraitIndex(nextTraitIndex)
+    setRuleDraft(emptyRuleDraft)
+    setPositionRuleDraft(emptyPositionRuleDraft)
+    setConditionDraft(emptyConditionDraft)
+    setStatus(`${traitName} deleted from ${category.name}.`)
+    await renderPreview(nextSource)
+  }
+
   function updateTraitPosition(traitKey, axis, value) {
     if (!source || busy) return
     const numericValue = Number(value)
@@ -743,8 +997,13 @@ function App() {
 
   function updatePositionRuleOffset(side, axis, value) {
     if (!source || busy) return
-    const numericValue = Number(value)
-    if (!Number.isFinite(numericValue)) return
+    const rawValue = String(value)
+    if (!/^-?\d*$/.test(rawValue)) return
+    if (rawValue === '' || rawValue === '-') {
+      setPositionRuleDraft((current) => ({ ...current, [`${side}${axis.toUpperCase()}`]: rawValue }))
+      return
+    }
+    const numericValue = Number(rawValue)
     const limit = Math.max(source.width, source.height) * 2
     const offset = Math.round(Math.max(-limit, Math.min(limit, numericValue)))
     setPositionRuleDraft((current) => ({ ...current, [`${side}${axis.toUpperCase()}`]: offset }))
@@ -761,10 +1020,10 @@ function App() {
     let rule = {
       first: positionRuleDraft.first,
       second: positionRuleDraft.second,
-      firstOffsetX: positionRuleDraft.firstX,
-      firstOffsetY: positionRuleDraft.firstY,
-      secondOffsetX: positionRuleDraft.secondX,
-      secondOffsetY: positionRuleDraft.secondY,
+      firstOffsetX: Number(positionRuleDraft.firstX) || 0,
+      firstOffsetY: Number(positionRuleDraft.firstY) || 0,
+      secondOffsetX: Number(positionRuleDraft.secondX) || 0,
+      secondOffsetY: Number(positionRuleDraft.secondY) || 0,
     }
     if (rule.first.localeCompare(rule.second) > 0) {
       rule = {
@@ -860,7 +1119,80 @@ function App() {
     await renderPreview(nextSource)
   }
 
+  function clearSamplePreviews() {
+    samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+    samplePreviewUrlsRef.current = []
+    setSamplePreviews([])
+  }
+
+  function closeSamplePreview() {
+    setSamplePreviewOpen(false)
+    clearSamplePreviews()
+  }
+
+  async function generateSamplePreview() {
+    if (!(await ensureHolderAccess())) return
+    if (!source?.categories?.length || busy) {
+      setStatus('Load a PSD or folder set first.')
+      return
+    }
+
+    const activeCategories = getActiveCategories(source.categories)
+    const rules = getSourceRules(source)
+    if (!activeCategories.length) {
+      setStatus('Include at least one folder containing an active trait.')
+      return
+    }
+
+    const validCombinationInfo = countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
+    if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
+      setStatus('No valid preview combinations remain. Remove a trait rule or restore more traits.')
+      return
+    }
+
+    const sampleCount = Math.min(16, Math.max(1, validCombinationInfo.count))
+    clearSamplePreviews()
+    setSamplePreviewOpen(true)
+    setBusy(true)
+    setStatus(`Rendering ${sampleCount} sample artworks...`)
+    const createdUrls = []
+    try {
+      const combos = project.mode === 'all'
+        ? buildCombinationsUpTo(activeCategories, rules, sampleCount)
+        : buildUniqueRandomCombinations(activeCategories, sampleCount, project.seed, rules)
+      if (!combos.length) throw new Error('No valid sample combinations could be selected.')
+
+      const previews = []
+      for (let index = 0; index < combos.length; index += 1) {
+        const blob = await renderArtwork(source, combos[index], { renderMaxDimension: 420 })
+        const url = URL.createObjectURL(blob)
+        createdUrls.push(url)
+        previews.push({
+          url,
+          edition: Number(project.startAt) + index,
+          traits: combos[index]
+            .filter((trait) => !trait.isNone)
+            .map((trait) => `${trait.category}: ${getTraitMetadataName(trait)}`),
+        })
+        if ((index + 1) % 4 === 0 || index === combos.length - 1) {
+          setStatus(`Rendered ${index + 1} of ${combos.length} sample artworks...`)
+          await waitForPaint()
+        }
+      }
+      samplePreviewUrlsRef.current = createdUrls
+      setSamplePreviews(previews)
+      setStatus(`Preview ready. These ${previews.length} samples use the current seed, rarities, and trait rules.`)
+    } catch (error) {
+      createdUrls.forEach((url) => URL.revokeObjectURL(url))
+      setSamplePreviewOpen(false)
+      setStatus(getErrorMessage(error, 'Could not render sample artworks.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function generateCollection() {
+    if (!(await ensureHolderAccess())) return
     if (!source?.categories?.length) {
       setStatus('Load a PSD or folder set first.')
       return
@@ -1005,8 +1337,9 @@ function App() {
     setStatus('Project backup downloaded. Keep this JSON with your PSD.')
   }
 
-  function chooseProjectBackup() {
+  async function chooseProjectBackup() {
     if (!source || busy) return
+    if (!(await ensureHolderAccess())) return
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'application/json,.json'
@@ -1070,6 +1403,35 @@ function App() {
   const traitEditorTrait = traitEditorCategory?.traits?.[traitEditorTraitIndex] || null
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
 
+  if (TOKEN_GATE_ENABLED && walletGate.status !== 'holder') {
+    const checkingWallet = walletGate.status === 'connecting' || walletGate.status === 'checking'
+    const choosingAnotherWallet = Boolean(walletGate.address)
+    return (
+      <main className="wallet-gate-shell">
+        <section className="wallet-gate-card" aria-live="polite">
+          <div className="wallet-gate-icon"><Wallet size={30} /></div>
+          <p className="eyebrow">HOODCHAN holders only</p>
+          <h1>Connect to enter Trait Forge</h1>
+          <p className="wallet-gate-description">Hold at least one HOODCHAN NFT in the connected wallet to upload traits and generate a collection.</p>
+          {walletGate.address && <code className="wallet-address">{formatWalletAddress(walletGate.address)}</code>}
+          {walletGate.message && <p className={`wallet-gate-message ${walletGate.status}`}>{walletGate.message}</p>}
+          <button
+            className="wallet-connect-action"
+            type="button"
+            disabled={checkingWallet}
+            onClick={connectWallet}
+          >
+            {checkingWallet ? <Loader2 className="spin" size={18} /> : <Wallet size={18} />}
+            {checkingWallet ? 'Connecting wallet...' : choosingAnotherWallet ? 'Choose another wallet' : 'Connect wallet'}
+          </button>
+          <a className="wallet-buy-link" href={HOODCHAN_COLLECTION_URL} target="_blank" rel="noreferrer">
+            Buy HOODCHAN on OpenSea
+          </a>
+        </section>
+      </main>
+    )
+  }
+
   return (
     <main className="app-shell" style={{ '--preview-background': previewBackground }}>
       <section className="topbar">
@@ -1077,9 +1439,24 @@ function App() {
           <p className="eyebrow">NFT trait combiner</p>
           <h1>Trait Forge</h1>
         </div>
-        <div className="status-pill">
-          {busy ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
-          <span>{status}</span>
+        <div className="topbar-actions">
+          <div className="status-pill">
+            {busy ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
+            <span>{status}</span>
+          </div>
+          {TOKEN_GATE_ENABLED && (
+            <div className="wallet-session">
+              <Wallet size={16} />
+              <div>
+                <code>{formatWalletAddress(walletGate.address)}</code>
+                <span>{walletGate.balance} HOODCHAN</span>
+              </div>
+              <button type="button" onClick={disconnectWallet} aria-label="Disconnect wallet">
+                <LogOut size={16} />
+                Disconnect
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -1133,11 +1510,18 @@ function App() {
           <input ref={psdInputRef} className="hidden" type="file" accept=".psd,image/vnd.adobe.photoshop" onChange={handlePsdUpload} />
           <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBaseUpload} />
           <input ref={folderInputRef} className="hidden" type="file" webkitdirectory="true" directory="" multiple onChange={handleFolderUpload} />
+          <input ref={traitFilesInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleTraitFilesUpload} />
 
           <div className="trait-list">
             <div className="list-header">
               <span>Render order</span>
-              <span>{formatComboCount(maxEditionsInfo)}</span>
+              <div className="render-order-header-actions">
+                <span>{formatComboCount(maxEditionsInfo)}</span>
+                <button type="button" onClick={addCategory} disabled={busy || !source}>
+                  <Plus size={13} />
+                  Add folder
+                </button>
+              </div>
             </div>
             {sourceSummary.length ? (
               sourceSummary.map((item, index) => (
@@ -1231,13 +1615,21 @@ function App() {
           )}
         </aside>
 
-        <section className="preview-stage">
+        <section
+          className={`preview-stage ${activeDropTarget === 'preview' ? 'drag-active' : ''}`}
+          aria-label="Artwork preview and file drop area"
+          onDragEnter={(event) => handleDropOver(event, 'preview')}
+          onDragOver={(event) => handleDropOver(event, 'preview')}
+          onDragLeave={(event) => handleDropLeave(event, 'preview')}
+          onDrop={(event) => handleFileDrop(event, 'preview')}
+        >
           {previewUrl ? (
             <img src={previewUrl} alt="Generated artwork preview" />
           ) : (
             <div className="preview-empty">
               <Upload size={36} />
-              <span>Preview appears after traits load.</span>
+              <span>Drop a PSD or base image here.</span>
+              <small>PNG, JPG, and WebP are supported.</small>
             </div>
           )}
         </section>
@@ -1322,6 +1714,11 @@ function App() {
             <span className="field-hint">Use 0 for original size.</span>
           </label>
 
+          <button className="sample-preview-action" type="button" onClick={generateSamplePreview} disabled={busy || !source}>
+            {busy && samplePreviewOpen ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
+            Preview {samplePreviewCount} {samplePreviewCount === 1 ? 'sample' : 'samples'}
+          </button>
+
           <button className="primary-action" type="button" onClick={generateCollection} disabled={busy || !source}>
             {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
             Generate ZIP
@@ -1340,6 +1737,42 @@ function App() {
           )}
         </aside>
       </section>
+
+      {samplePreviewOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="sample-preview-modal" role="dialog" aria-modal="true" aria-label="Collection sample preview">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Before ZIP generation</p>
+                <h2>Collection samples</h2>
+              </div>
+              <button type="button" aria-label="Close sample preview" disabled={busy} onClick={closeSamplePreview}>
+                <X size={18} />
+              </button>
+            </header>
+            {samplePreviews.length ? (
+              <div className="sample-preview-grid">
+                {samplePreviews.map((preview) => (
+                  <figure key={preview.url} title={preview.traits.join('\n')}>
+                    <div style={{ '--preview-background': previewBackground }}>
+                      <img src={preview.url} alt={`Sample artwork ${preview.edition}`} />
+                    </div>
+                    <figcaption>#{preview.edition}</figcaption>
+                  </figure>
+                ))}
+              </div>
+            ) : (
+              <div className="sample-preview-loading">
+                <Loader2 className="spin" size={28} />
+                <span>Building sample combinations…</span>
+              </div>
+            )}
+            <footer className="sample-preview-footer">
+              Samples use the current seed, rarities, positions, and compatibility rules. Nothing is downloaded yet.
+            </footer>
+          </section>
+        </div>
+      )}
 
       {traitEditorOpen && source?.categories?.length && (
         <div className="modal-backdrop" role="presentation">
@@ -1399,6 +1832,15 @@ function App() {
                     <h3>{traitEditorCategory?.name}</h3>
                   </div>
                   <div className="selected-folder-controls">
+                    <button
+                      className="add-traits-action"
+                      type="button"
+                      disabled={busy || !traitEditorCategory}
+                      onClick={() => chooseTraitFiles(traitEditorCategoryIndex)}
+                    >
+                      <ImagePlus size={15} />
+                      Add traits
+                    </button>
                     <span>{traitEditorCategory?.traits.length || 0} traits</span>
                     <label className="folder-none-chance">
                       No trait chance
@@ -1531,6 +1973,15 @@ function App() {
                           ))}
                         </select>
                       </label>
+                      <button
+                        className="trait-delete-action"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => deleteTrait(traitEditorCategoryIndex, traitEditorTraitIndex)}
+                      >
+                        <Trash2 size={16} />
+                        Delete trait
+                      </button>
                     </div>
                   </>
                 ) : (
@@ -1554,7 +2005,50 @@ function App() {
                 <X size={18} />
               </button>
             </header>
+            <nav className="rule-manager-tabs" aria-label="Trait manager sections">
+              <button
+                className={activeRuleManagerTab === 'trait-pairs' ? 'active' : ''}
+                type="button"
+                aria-current={activeRuleManagerTab === 'trait-pairs' ? 'page' : undefined}
+                onClick={() => setActiveRuleManagerTab('trait-pairs')}
+              >
+                <Ban size={16} />
+                <span>Trait pairs</span>
+                <strong>{incompatibilities.length}</strong>
+              </button>
+              <button
+                className={activeRuleManagerTab === 'positions' ? 'active' : ''}
+                type="button"
+                aria-current={activeRuleManagerTab === 'positions' ? 'page' : undefined}
+                onClick={() => setActiveRuleManagerTab('positions')}
+              >
+                <SlidersHorizontal size={16} />
+                <span>Positions</span>
+                <strong>{positionRules.length}</strong>
+              </button>
+              <button
+                className={activeRuleManagerTab === 'folder-rules' ? 'active' : ''}
+                type="button"
+                aria-current={activeRuleManagerTab === 'folder-rules' ? 'page' : undefined}
+                onClick={() => setActiveRuleManagerTab('folder-rules')}
+              >
+                <FolderOpen size={16} />
+                <span>Folder rules</span>
+                <strong>{categoryRequirements.length}</strong>
+              </button>
+              <button
+                className={activeRuleManagerTab === 'folder-conflicts' ? 'active' : ''}
+                type="button"
+                aria-current={activeRuleManagerTab === 'folder-conflicts' ? 'page' : undefined}
+                onClick={() => setActiveRuleManagerTab('folder-conflicts')}
+              >
+                <Layers3 size={16} />
+                <span>Folder conflicts</span>
+                <strong>{categoryConflicts.length}</strong>
+              </button>
+            </nav>
             <div className="rule-manager-grid">
+              {activeRuleManagerTab === 'trait-pairs' && (
               <section className="rule-manager-section">
                 <div className="rule-manager-title">
                   <span>
@@ -1589,7 +2083,6 @@ function App() {
                     </select>
                   </label>
                   <ManagerTraitPreview traitKey={ruleDraft.first} url={managerPreviewUrls[ruleDraft.first]} label={traitOptionMap.get(ruleDraft.first)} />
-                  <TraitPositionControls trait={findTraitByKey(source, ruleDraft.first)} onChange={updateTraitPosition} />
                 </div>
                 <div className="trait-picker-field">
                   <label>
@@ -1621,7 +2114,7 @@ function App() {
                   <div className="pair-position-preview">
                     <div className="pair-position-preview-header">
                       <span>Selected pair preview</span>
-                      <small>Adjust the first trait's X/Y values above</small>
+                      <small>Confirm the selected traits before adding the rule</small>
                     </div>
                     <div className="pair-position-preview-frame">
                       {managerPairPreviewUrl ? (
@@ -1653,7 +2146,9 @@ function App() {
                   </div>
                 ) : <p className="manager-empty">No trait-pair rules yet.</p>}
               </section>
+              )}
 
+              {activeRuleManagerTab === 'positions' && (
               <section className="rule-manager-section position-manager-section">
                 <div className="rule-manager-title">
                   <span>
@@ -1778,7 +2273,9 @@ function App() {
                   </div>
                 ) : <p className="manager-empty">No pair-specific position rules yet.</p>}
               </section>
+              )}
 
+              {activeRuleManagerTab === 'folder-rules' && (
               <section className="rule-manager-section">
                 <div className="rule-manager-title">
                   <span>
@@ -1825,7 +2322,9 @@ function App() {
                   </div>
                 ) : <p className="manager-empty">No conditional folder rules yet.</p>}
               </section>
+              )}
 
+              {activeRuleManagerTab === 'folder-conflicts' && (
               <section className="rule-manager-section">
                 <div className="rule-manager-title">
                   <span>
@@ -1866,12 +2365,37 @@ function App() {
                   </div>
                 ) : <p className="manager-empty">No folder conflicts yet.</p>}
               </section>
+              )}
             </div>
           </section>
         </div>
       )}
     </main>
   )
+}
+
+async function readHoodchanBalance(address) {
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address || '')) throw new Error('The connected wallet address is invalid.')
+  const data = `0x70a08231${address.slice(2).toLowerCase().padStart(64, '0')}`
+  const response = await fetch(ROBINHOOD_RPC_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_call',
+      params: [{ to: HOODCHAN_CONTRACT_ADDRESS, data }, 'latest'],
+    }),
+  })
+  if (!response.ok) throw new Error('Robinhood Chain did not respond to the ownership check.')
+  const payload = await response.json()
+  if (payload.error) throw new Error(payload.error.message || 'The ownership check failed.')
+  if (!/^0x[a-fA-F0-9]+$/.test(payload.result || '')) throw new Error('The ownership check returned an invalid balance.')
+  return BigInt(payload.result)
+}
+
+function formatWalletAddress(address) {
+  return address ? `${address.slice(0, 6)}…${address.slice(-4)}` : ''
 }
 
 function ManagerTraitPreview({ traitKey, url, label }) {
@@ -1892,35 +2416,6 @@ function ManagerTraitPreview({ traitKey, url, label }) {
   )
 }
 
-function TraitPositionControls({ trait, onChange }) {
-  if (!trait) return <div className="trait-position-controls empty">Select a trait to position it.</div>
-  const traitKey = makeTraitKey(trait)
-  return (
-    <div className="trait-position-controls">
-      <span>
-        <small>X</small>
-        <input
-          type="number"
-          step="1"
-          value={getTraitOffset(trait, 'x')}
-          aria-label={`Horizontal position for ${getTraitMetadataName(trait)}`}
-          onChange={(event) => onChange(traitKey, 'x', event.target.value)}
-        />
-      </span>
-      <span>
-        <small>Y</small>
-        <input
-          type="number"
-          step="1"
-          value={getTraitOffset(trait, 'y')}
-          aria-label={`Vertical position for ${getTraitMetadataName(trait)}`}
-          onChange={(event) => onChange(traitKey, 'y', event.target.value)}
-        />
-      </span>
-    </div>
-  )
-}
-
 function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange }) {
   if (!traitKey) return <div className="trait-position-controls empty">Select a trait to set its pair position.</div>
   const traitName = label?.split(' / ').at(-1) || 'trait'
@@ -1929,21 +2424,29 @@ function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange
       <span>
         <small>X</small>
         <input
-          type="number"
-          step="1"
+          type="text"
+          inputMode="numeric"
+          pattern="-?[0-9]*"
           value={offsetX}
           aria-label={`Pair-specific horizontal position for ${traitName}`}
           onChange={(event) => onChange('x', event.target.value)}
+          onBlur={(event) => {
+            if (event.target.value === '' || event.target.value === '-') onChange('x', '0')
+          }}
         />
       </span>
       <span>
         <small>Y</small>
         <input
-          type="number"
-          step="1"
+          type="text"
+          inputMode="numeric"
+          pattern="-?[0-9]*"
           value={offsetY}
           aria-label={`Pair-specific vertical position for ${traitName}`}
           onChange={(event) => onChange('y', event.target.value)}
+          onBlur={(event) => {
+            if (event.target.value === '' || event.target.value === '-') onChange('y', '0')
+          }}
         />
       </span>
     </div>
@@ -2350,8 +2853,12 @@ async function renderArtwork(source, traits, options = {}) {
     for (const trait of traits) {
       if (trait.isNone) continue
       const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
-      for (const layer of trait.layers) {
-        drawPsdLayer(context, layer, position.x, position.y)
+      if (trait.type === 'image') {
+        context.drawImage(trait.image, position.x, position.y, source.width, source.height)
+      } else {
+        for (const layer of trait.layers) {
+          drawPsdLayer(context, layer, position.x, position.y)
+        }
       }
     }
   } else {
