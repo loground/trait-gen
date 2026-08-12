@@ -96,6 +96,8 @@ function App() {
   const psdInputRef = useRef(null)
   const baseInputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const traitFilesInputRef = useRef(null)
+  const traitUploadCategoryRef = useRef(null)
   const baseFileRef = useRef(null)
   const previewTimerRef = useRef(null)
   const previewRequestRef = useRef(0)
@@ -569,6 +571,69 @@ function App() {
     } finally {
       setBusy(false)
       event.target.value = ''
+    }
+  }
+
+  function chooseTraitFiles(categoryIndex) {
+    if (!source || busy || !source.categories[categoryIndex]) return
+    traitUploadCategoryRef.current = categoryIndex
+    traitFilesInputRef.current?.click()
+  }
+
+  async function handleTraitFilesUpload(event) {
+    const files = Array.from(event.target.files || [])
+    const categoryIndex = traitUploadCategoryRef.current
+    event.target.value = ''
+    traitUploadCategoryRef.current = null
+    if (!files.length || !source || categoryIndex === null || !source.categories[categoryIndex]) return
+    if (!(await ensureHolderAccess())) return
+
+    const imageFiles = files.filter((file) => IMAGE_TYPES.includes(file.type))
+    if (!imageFiles.length) {
+      setStatus('Choose PNG, JPG, or WebP trait images.')
+      return
+    }
+
+    setBusy(true)
+    const category = source.categories[categoryIndex]
+    setStatus(`Adding ${imageFiles.length} ${imageFiles.length === 1 ? 'trait' : 'traits'} to ${category.name}...`)
+    try {
+      const existingIds = new Set(source.categories.flatMap((item) => item.traits.map((trait) => getTraitId(trait))))
+      const addedTraits = []
+      for (const file of imageFiles) {
+        const originalName = cleanName(file.name.replace(/\.[^.]+$/, '')) || 'Untitled'
+        let suffix = 1
+        let id = makeTraitId(category.name, file.name)
+        while (existingIds.has(id)) {
+          suffix += 1
+          id = makeTraitId(category.name, `${file.name}#${suffix}`)
+        }
+        existingIds.add(id)
+        addedTraits.push({
+          type: 'image',
+          id,
+          category: category.name,
+          originalName,
+          name: originalName,
+          weight: 1,
+          image: await loadImageFromFile(file),
+          fileName: file.name,
+        })
+      }
+
+      const categories = source.categories.map((item, index) => (
+        index === categoryIndex ? { ...item, traits: [...item.traits, ...addedTraits] } : item
+      ))
+      const nextSource = { ...source, categories }
+      setSource(nextSource)
+      setSelectedCategoryIndex(categoryIndex)
+      setSelectedTraitIndex(categories[categoryIndex].traits.length - addedTraits.length)
+      setStatus(`Added ${addedTraits.length} ${addedTraits.length === 1 ? 'trait' : 'traits'} to ${category.name}.`)
+      await renderPreview(nextSource)
+    } catch (error) {
+      setStatus(getErrorMessage(error, `Could not add traits to ${category.name}.`))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -1445,6 +1510,7 @@ function App() {
           <input ref={psdInputRef} className="hidden" type="file" accept=".psd,image/vnd.adobe.photoshop" onChange={handlePsdUpload} />
           <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBaseUpload} />
           <input ref={folderInputRef} className="hidden" type="file" webkitdirectory="true" directory="" multiple onChange={handleFolderUpload} />
+          <input ref={traitFilesInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleTraitFilesUpload} />
 
           <div className="trait-list">
             <div className="list-header">
@@ -1766,6 +1832,15 @@ function App() {
                     <h3>{traitEditorCategory?.name}</h3>
                   </div>
                   <div className="selected-folder-controls">
+                    <button
+                      className="add-traits-action"
+                      type="button"
+                      disabled={busy || !traitEditorCategory}
+                      onClick={() => chooseTraitFiles(traitEditorCategoryIndex)}
+                    >
+                      <ImagePlus size={15} />
+                      Add traits
+                    </button>
                     <span>{traitEditorCategory?.traits.length || 0} traits</span>
                     <label className="folder-none-chance">
                       No trait chance
@@ -2778,8 +2853,12 @@ async function renderArtwork(source, traits, options = {}) {
     for (const trait of traits) {
       if (trait.isNone) continue
       const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
-      for (const layer of trait.layers) {
-        drawPsdLayer(context, layer, position.x, position.y)
+      if (trait.type === 'image') {
+        context.drawImage(trait.image, position.x, position.y, source.width, source.height)
+      } else {
+        for (const layer of trait.layers) {
+          drawPsdLayer(context, layer, position.x, position.y)
+        }
       }
     }
   } else {
