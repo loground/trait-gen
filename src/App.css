@@ -345,6 +345,19 @@ button:disabled {
   font-size: 14px;
 }
 
+.trait-folder-group {
+  transition: background-color 130ms ease, box-shadow 130ms ease;
+}
+
+.trait-folder-group.drop-active {
+  background: #e6f6f2;
+  box-shadow: inset 3px 0 #0d6b67;
+}
+
+.trait-folder-group.drop-active .trait-row {
+  background: transparent;
+}
+
 .trait-row.selected {
   background: #f2faf8;
 }
@@ -414,6 +427,63 @@ button:disabled {
   height: 28px;
   min-height: 28px;
   padding: 0;
+}
+
+.trait-actions button.active {
+  color: #075a55;
+  background: #e4f6f2;
+  border-color: #8fc9c0;
+}
+
+.folder-trait-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px 12px 28px;
+  border-top: 1px dashed #d8dee8;
+  background: #f8fafc;
+}
+
+.folder-trait-list > p {
+  margin: 2px 0;
+  color: #748298;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.folder-trait-chip {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  color: #34465d;
+  background: #fff;
+  border: 1px solid #d5dde8;
+  border-radius: 5px;
+  cursor: grab;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.folder-trait-chip:active {
+  cursor: grabbing;
+}
+
+.folder-trait-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-trait-chip small {
+  flex: 0 0 auto;
+  color: #8a97a8;
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
 }
 
 .empty-state {
@@ -1075,7 +1145,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-.add-traits-action {
+.modal-add-traits-action {
   min-height: 32px;
   display: inline-flex;
   align-items: center;
@@ -1088,7 +1158,7 @@ button:disabled {
   font-weight: 850;
 }
 
-.add-traits-action:hover:not(:disabled) {
+.modal-add-traits-action:hover:not(:disabled) {
   color: #095b57;
   background: #e1f3ef;
   border-color: #70b8ad;

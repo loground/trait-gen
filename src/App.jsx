@@ -81,6 +81,8 @@ function App() {
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
   const [activeRuleManagerTab, setActiveRuleManagerTab] = useState('trait-pairs')
+  const [expandedCategoryIndex, setExpandedCategoryIndex] = useState(null)
+  const [traitDropCategoryIndex, setTraitDropCategoryIndex] = useState(null)
   const [renderOrderRename, setRenderOrderRename] = useState(null)
   const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
   const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
@@ -108,6 +110,7 @@ function App() {
   const positionPairPreviewUrlRef = useRef('')
   const traitEditorPreviewUrlRef = useRef('')
   const traitPreviewDragRef = useRef(null)
+  const draggedTraitRef = useRef(null)
   const walletCheckRef = useRef(0)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
 
@@ -681,6 +684,11 @@ function App() {
       if (current === nextIndex) return index
       return current
     })
+    setExpandedCategoryIndex((current) => {
+      if (current === index) return nextIndex
+      if (current === nextIndex) return index
+      return current
+    })
     setStatus(`Render order updated: ${categories.map((item) => item.name).join(' -> ')}.`)
     await renderPreview(nextSource)
   }
@@ -954,6 +962,38 @@ function App() {
     setSelectedTraitIndex(Math.max(0, categories[toCategoryIndex].traits.length - 1))
     setStatus(`Moved ${getTraitMetadataName(trait)} from ${fromCategory.name} to ${toCategory.name}.`)
     await renderPreview(nextSource)
+  }
+
+  function startTraitFolderDrag(event, categoryIndex, traitIndex) {
+    if (busy) {
+      event.preventDefault()
+      return
+    }
+    draggedTraitRef.current = { categoryIndex, traitIndex }
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', `${categoryIndex}:${traitIndex}`)
+  }
+
+  function handleTraitFolderDragOver(event, categoryIndex) {
+    const draggedTrait = draggedTraitRef.current
+    if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    setTraitDropCategoryIndex(categoryIndex)
+  }
+
+  function finishTraitFolderDrag() {
+    draggedTraitRef.current = null
+    setTraitDropCategoryIndex(null)
+  }
+
+  async function handleTraitFolderDrop(event, categoryIndex) {
+    event.preventDefault()
+    const draggedTrait = draggedTraitRef.current
+    finishTraitFolderDrag()
+    if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
+    setExpandedCategoryIndex(categoryIndex)
+    await moveTraitToCategory(draggedTrait.categoryIndex, draggedTrait.traitIndex, categoryIndex)
   }
 
   async function addIncompatibility() {
@@ -1525,44 +1565,81 @@ function App() {
             </div>
             {sourceSummary.length ? (
               sourceSummary.map((item, index) => (
-                <div className={`trait-row ${item.enabled ? '' : 'disabled'} ${selectedCategoryIndex === index ? 'selected' : ''}`} key={`${item.name}-${index}`}>
-                  {renderOrderRename?.categoryIndex === index ? (
-                    <input
-                      className="trait-rename-input"
-                      value={renderOrderRename.value}
-                      autoFocus
-                      aria-label={`Rename ${item.name}`}
-                      disabled={busy}
-                      onChange={(event) => setRenderOrderRename((current) => ({ ...current, value: event.target.value }))}
-                      onBlur={finishRenderOrderRename}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') event.currentTarget.blur()
-                        if (event.key === 'Escape') setRenderOrderRename(null)
-                      }}
-                    />
-                  ) : (
-                    <button className="trait-select" type="button" aria-label={`Rename ${item.name}`} onClick={() => startRenderOrderRename(index)}>
-                      <span title="Click to rename">{item.name}</span>
-                      {!item.enabled && <small>Excluded</small>}
-                    </button>
-                  )}
-                  <div className="trait-actions">
-                    <strong>{item.enabled ? item.count : 0}/{item.total}</strong>
-                    <button type="button" aria-label={`Move ${item.name} earlier`} disabled={busy || index === 0} onClick={() => moveCategory(index, -1)}>
-                      <ArrowUp size={14} />
-                    </button>
-                    <button type="button" aria-label={`Move ${item.name} later`} disabled={busy || index === sourceSummary.length - 1} onClick={() => moveCategory(index, 1)}>
-                      <ArrowDown size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={item.enabled ? `Remove ${item.name}` : `Restore ${item.name}`}
-                      disabled={busy}
-                      onClick={() => toggleCategory(index, !item.enabled)}
-                    >
-                      {item.enabled ? <X size={14} /> : <RotateCcw size={14} />}
-                    </button>
+                <div
+                  className={`trait-folder-group ${traitDropCategoryIndex === index ? 'drop-active' : ''}`}
+                  key={`${item.name}-${index}`}
+                  onDragOver={(event) => handleTraitFolderDragOver(event, index)}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) setTraitDropCategoryIndex((current) => (current === index ? null : current))
+                  }}
+                  onDrop={(event) => handleTraitFolderDrop(event, index)}
+                >
+                  <div className={`trait-row ${item.enabled ? '' : 'disabled'} ${selectedCategoryIndex === index ? 'selected' : ''}`}>
+                    {renderOrderRename?.categoryIndex === index ? (
+                      <input
+                        className="trait-rename-input"
+                        value={renderOrderRename.value}
+                        autoFocus
+                        aria-label={`Rename ${item.name}`}
+                        disabled={busy}
+                        onChange={(event) => setRenderOrderRename((current) => ({ ...current, value: event.target.value }))}
+                        onBlur={finishRenderOrderRename}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur()
+                          if (event.key === 'Escape') setRenderOrderRename(null)
+                        }}
+                      />
+                    ) : (
+                      <button className="trait-select" type="button" aria-label={`Rename ${item.name}`} onClick={() => startRenderOrderRename(index)}>
+                        <span title="Click to rename">{item.name}</span>
+                        {!item.enabled && <small>Excluded</small>}
+                      </button>
+                    )}
+                    <div className="trait-actions">
+                      <strong>{item.enabled ? item.count : 0}/{item.total}</strong>
+                      <button
+                        className={expandedCategoryIndex === index ? 'active' : ''}
+                        type="button"
+                        aria-label={`${expandedCategoryIndex === index ? 'Hide' : 'Show'} traits in ${item.name}`}
+                        aria-expanded={expandedCategoryIndex === index}
+                        disabled={busy}
+                        onClick={() => setExpandedCategoryIndex((current) => (current === index ? null : index))}
+                      >
+                        <Eye size={14} />
+                      </button>
+                      <button type="button" aria-label={`Move ${item.name} earlier`} disabled={busy || index === 0} onClick={() => moveCategory(index, -1)}>
+                        <ArrowUp size={14} />
+                      </button>
+                      <button type="button" aria-label={`Move ${item.name} later`} disabled={busy || index === sourceSummary.length - 1} onClick={() => moveCategory(index, 1)}>
+                        <ArrowDown size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={item.enabled ? `Remove ${item.name}` : `Restore ${item.name}`}
+                        disabled={busy}
+                        onClick={() => toggleCategory(index, !item.enabled)}
+                      >
+                        {item.enabled ? <X size={14} /> : <RotateCcw size={14} />}
+                      </button>
+                    </div>
                   </div>
+                  {expandedCategoryIndex === index && (
+                    <div className="folder-trait-list" aria-label={`Traits in ${item.name}`}>
+                      {source.categories[index].traits.length ? source.categories[index].traits.map((trait, traitIndex) => (
+                        <div
+                          className="folder-trait-chip"
+                          draggable={!busy}
+                          onDragStart={(event) => startTraitFolderDrag(event, index, traitIndex)}
+                          onDragEnd={finishTraitFolderDrag}
+                          title={`Drag ${getTraitMetadataName(trait)} to another folder`}
+                          key={`${getTraitId(trait)}-${traitIndex}`}
+                        >
+                          <span>{getTraitMetadataName(trait)}</span>
+                          <small>Drag to move</small>
+                        </div>
+                      )) : <p>This folder has no traits. Drag traits here from another folder.</p>}
+                    </div>
+                  )}
                 </div>
               ))
             ) : (
@@ -1783,6 +1860,15 @@ function App() {
                 <h2>Trait editor</h2>
               </div>
               <div className="modal-header-actions">
+                <button
+                  className="modal-add-traits-action"
+                  type="button"
+                  disabled={busy || !traitEditorCategory}
+                  onClick={() => chooseTraitFiles(traitEditorCategoryIndex)}
+                >
+                  <ImagePlus size={16} />
+                  Add traits
+                </button>
                 <button className="modal-rarity-action" type="button" disabled={busy} onClick={randomizeTraitRarities}>
                   <Shuffle size={16} />
                   Randomize rarities
@@ -1832,15 +1918,6 @@ function App() {
                     <h3>{traitEditorCategory?.name}</h3>
                   </div>
                   <div className="selected-folder-controls">
-                    <button
-                      className="add-traits-action"
-                      type="button"
-                      disabled={busy || !traitEditorCategory}
-                      onClick={() => chooseTraitFiles(traitEditorCategoryIndex)}
-                    >
-                      <ImagePlus size={15} />
-                      Add traits
-                    </button>
                     <span>{traitEditorCategory?.traits.length || 0} traits</span>
                     <label className="folder-none-chance">
                       No trait chance
