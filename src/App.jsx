@@ -17,6 +17,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Share2,
   Shuffle,
   SlidersHorizontal,
   Trash2,
@@ -36,6 +37,7 @@ const METADATA_FILE_NAME = 'metadata-file.csv'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
 const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
+const X_SHARE_TEXT = 'I just forged the traits for my upcoming NFT collection on trait-forge.art, it was easy and cool'
 const GENERATION_CODE_URL = '/api/codes/redeem'
 const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
 const OUTPUT_FORMATS = {
@@ -1232,6 +1234,38 @@ function App() {
     clearSamplePreviews()
   }
 
+  async function shareSamplePreview(preview) {
+    const extension = preview.blob.type === 'image/jpeg' ? 'jpg' : (preview.blob.type.split('/')[1] || 'png')
+    const fileName = `${slugify(project.name)}-preview-${preview.edition}.${extension}`
+    const file = new File([preview.blob], fileName, { type: preview.blob.type })
+
+    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({
+          title: 'Trait Forge preview',
+          text: X_SHARE_TEXT,
+          files: [file],
+        })
+        setStatus(`Shared preview #${preview.edition}.`)
+      } catch (error) {
+        if (error?.name !== 'AbortError') setStatus('Could not open image sharing. Try downloading the preview instead.')
+      }
+      return
+    }
+
+    const download = document.createElement('a')
+    download.href = preview.url
+    download.download = fileName
+    document.body.appendChild(download)
+    download.click()
+    download.remove()
+
+    const intent = new URL('https://x.com/intent/tweet')
+    intent.searchParams.set('text', X_SHARE_TEXT)
+    window.open(intent.toString(), '_blank', 'noopener,noreferrer')
+    setStatus(`Preview #${preview.edition} downloaded. Attach it to the X post that just opened.`)
+  }
+
   async function generateSamplePreview() {
     if (!(await ensureHolderAccess())) return
     if (!source?.categories?.length || busy) {
@@ -1271,6 +1305,7 @@ function App() {
         createdUrls.push(url)
         previews.push({
           url,
+          blob,
           edition: Number(project.startAt) + index,
           traits: combos[index]
             .filter((trait) => !trait.isNone)
@@ -1939,7 +1974,13 @@ function App() {
                     <div style={{ '--preview-background': previewBackground }}>
                       <img src={preview.url} alt={`Sample artwork ${preview.edition}`} />
                     </div>
-                    <figcaption>#{preview.edition}</figcaption>
+                    <figcaption>
+                      <span>#{preview.edition}</span>
+                      <button type="button" onClick={() => shareSamplePreview(preview)}>
+                        <Share2 size={14} />
+                        Share to X
+                      </button>
+                    </figcaption>
                   </figure>
                 ))}
               </div>

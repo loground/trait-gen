@@ -986,6 +986,27 @@ button:disabled {
   border-top: 1px solid #e1e6ed;
   font-size: 12px;
   font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sample-preview-grid figcaption button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  color: #fff;
+  background: #0f1419;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sample-preview-grid figcaption button:hover {
+  background: #272c30;
 }
 
 .sample-preview-loading {
