@@ -1,16 +1,45 @@
-# React + Vite
+# Trait Forge
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Browser-based NFT collection generator for mixing traits, assigning rarity,
+creating compatibility rules, previewing combinations, and exporting images and
+metadata as a ZIP.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev
+```
 
-## React Compiler
+ZIP generation runs directly in the browser and is free in development and
+production. It does not require a wallet, generation code, credit, or payment.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Production setup
 
-## Expanding the Oxlint configuration
+1. Create a Neon PostgreSQL database and set `DATABASE_URL` in Vercel.
+2. Open Neon's SQL Editor and run `db/migrations/001_credit_ledger.sql`, or
+   run the idempotent migration locally with a connection string copied directly
+   from Neon:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+   ```bash
+   DATABASE_URL='postgresql://...' npm run migrate
+   ```
+3. Copy every variable in `.env.example` into Vercel Production settings. Use
+   separate random values for `SESSION_SECRET` and `CODE_PEPPER`.
+4. Set `ROBINHOOD_RPC_URL` to a private mainnet RPC with historical receipts.
+5. Create a private Vercel Blob store before enabling server-side source uploads.
+
+Create a private generation code from a trusted terminal:
+
+```bash
+CODE_PEPPER=... DATABASE_URL=... npm run code:create -- --credits 1 --uses 1
+```
+
+Never expose database, session, RPC, Blob, or code secrets through a
+`VITE_` environment variable. Anything prefixed with `VITE_` is shipped to the
+browser.
+
+## Generation model
+
+Image composition runs in the browser. Large collections should be generated on
+a capable desktop browser because the work can require significant memory and CPU.

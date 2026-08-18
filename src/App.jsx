@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { readPsd } from 'ag-psd'
+import { decodeLayerPixels, getLayerCanvas, readPsd } from 'ag-psd'
 import JSZip from 'jszip'
 import {
   Archive,
@@ -30,6 +30,7 @@ import { buildSmartRarityProfile } from './smartRarities.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
+const RETAINED_PSD_BITMAP_LIMIT = 512 * 1024 * 1024
 const COMBO_COUNT_DISPLAY_LIMIT = 1000000
 const COMBO_COUNT_TIME_BUDGET_MS = 32
 const METADATA_FILE_NAME = 'metadata-file.csv'
@@ -39,6 +40,7 @@ const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
 const HOODCHAN_CONTRACT_ADDRESS = '0x774db2207d26570f5638028839c816702a40abc2'
 const HOODCHAN_COLLECTION_URL = 'https://opensea.io/collection/h00dchan'
 const ROBINHOOD_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com'
+const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
 const TOKEN_GATE_ENABLED = false
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
@@ -74,6 +76,7 @@ function App() {
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
   const [walletGate, setWalletGate] = useState({ status: 'idle', address: '', balance: 0, message: '' })
+  const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
@@ -115,6 +118,32 @@ function App() {
   const traitFolderDragOccurredRef = useRef(false)
   const walletCheckRef = useRef(0)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
+
+  function acceptIntro() {
+    writeStoredValue(INTRO_ACCEPTED_KEY, 'yes')
+    setIntroOpen(false)
+  }
+
+  async function startGeneration() {
+    if (!source || busy) return
+    const generationError = getCollectionGenerationError(source)
+    if (generationError) {
+      setStatus(generationError)
+      return
+    }
+    await generateCollection()
+  }
+
+  function getCollectionGenerationError(activeSource) {
+    if (!activeSource?.categories?.length) return 'Load a PSD or folder set first.'
+    const activeCategories = getActiveCategories(activeSource.categories)
+    if (!activeCategories.length) return 'Include at least one folder with a trait chance above 0.'
+    const validCombinationInfo = countValidCombinations(activeCategories, getSourceRules(activeSource), COMBO_COUNT_DISPLAY_LIMIT)
+    if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
+      return 'No valid editions remain. Remove a trait rule or restore more traits.'
+    }
+    return ''
+  }
 
   const combinationStructureKey = getCombinationStructureKey(source)
   if (maxEditionsCacheRef.current.key !== combinationStructureKey) {
@@ -436,10 +465,17 @@ function App() {
       }
       const buffer = await file.arrayBuffer()
       const psd = readPsd(buffer, {
+        useRawData: true,
         skipCompositeImageData: true,
         skipThumbnail: true,
+        skipLinkedFilesData: true,
       })
+      const estimatedBitmapBytes = estimatePsdBitmapBytes(psd)
+      const lowMemoryMode = estimatedBitmapBytes > RETAINED_PSD_BITMAP_LIMIT
+      if (!lowMemoryMode) decodePsdLayerPixels(psd.children)
       const parsed = parsePsd(psd, file.name)
+      parsed.lowMemoryMode = lowMemoryMode
+      parsed.estimatedBitmapBytes = estimatedBitmapBytes
       setSource(parsed)
       setExpandedCategoryIndices([])
       setSelectedCategoryIndex(0)
@@ -447,7 +483,11 @@ function App() {
       setRuleFolderDraft(emptyRuleFolderDraft)
       setPositionRuleDraft(emptyPositionRuleDraft)
       setPositionRuleFolderDraft(emptyRuleFolderDraft)
-      setStatus(`Loaded ${parsed.categories.length} categories from ${file.name}.`)
+      setStatus(
+        lowMemoryMode
+          ? `Loaded ${parsed.categories.length} categories from ${file.name} in low-memory mode (${formatBytes(estimatedBitmapBytes)} expanded). Layers decode as needed.`
+          : `Loaded ${parsed.categories.length} categories from ${file.name}.`,
+      )
       await renderPreview(parsed)
     } catch (error) {
       setStatus(getErrorMessage(error, 'Could not read that PSD. Try a layered RGB PSD with rasterized trait layers.'))
@@ -1868,9 +1908,9 @@ function App() {
             Preview {samplePreviewCount} {samplePreviewCount === 1 ? 'sample' : 'samples'}
           </button>
 
-          <button className="primary-action" type="button" onClick={generateCollection} disabled={busy || !source}>
+          <button className="primary-action" type="button" onClick={startGeneration} disabled={busy || !source}>
             {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            Generate ZIP
+            Generate ZIP · Free
           </button>
 
           <button className="download-link" type="button" onClick={downloadProjectBackup} disabled={busy || !source}>
@@ -1886,6 +1926,27 @@ function App() {
           )}
         </aside>
       </section>
+
+      {introOpen && (
+        <div className="modal-backdrop intro-backdrop" role="presentation">
+          <section className="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+            <div className="intro-mark"><Layers3 size={30} /></div>
+            <p className="eyebrow">Welcome to Trait Forge</p>
+            <h2 id="intro-title">Build your upcoming NFT collection</h2>
+            <p>
+              This app was created to generate NFT collections. Mix traits, add rarities, create rules,
+              and export images with metadata for your upcoming collection.
+            </p>
+            <div className="intro-price-note">
+              ZIP generation is free and does not require payment, a code, or a wallet connection.
+            </div>
+            <button className="primary-action" type="button" onClick={acceptIntro}>
+              <CheckCircle2 size={18} />
+              I understand and agree
+            </button>
+          </section>
+        </div>
+      )}
 
       {samplePreviewOpen && (
         <div className="modal-backdrop" role="presentation">
@@ -2584,6 +2645,22 @@ function App() {
   )
 }
 
+function readStoredValue(key) {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStoredValue(key, value) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Access still works for this tab when browser storage is unavailable.
+  }
+}
+
 async function readHoodchanBalance(address) {
   if (!/^0x[a-fA-F0-9]{40}$/.test(address || '')) throw new Error('The connected wallet address is invalid.')
   const data = `0x70a08231${address.slice(2).toLowerCase().padStart(64, '0')}`
@@ -2950,6 +3027,31 @@ function parsePsd(psd, fileName) {
   }
 }
 
+function estimatePsdBitmapBytes(psd) {
+  let total = 0
+  const visit = (layers = []) => {
+    for (const layer of layers) {
+      if (layer.children?.length) {
+        visit(layer.children)
+        continue
+      }
+      if (!layer.rawData) continue
+      const width = Math.max(0, Number(layer.right) - Number(layer.left))
+      const height = Math.max(0, Number(layer.bottom) - Number(layer.top))
+      total += width * height * 4
+    }
+  }
+  visit(psd.children)
+  return total
+}
+
+function decodePsdLayerPixels(layers = []) {
+  for (const layer of layers) {
+    if (layer.children?.length) decodePsdLayerPixels(layer.children)
+    else if (layer.rawData) decodeLayerPixels(layer)
+  }
+}
+
 function makePsdTrait(node, category, index) {
   const layers = collectRenderableLayers(node)
   if (!layers.length) return null
@@ -3097,11 +3199,17 @@ function getPairPositionOverrides(traits, positionRules = []) {
 
 function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
   if (!hasRenderableCanvas(layer)) return
+  const canvas = layer.canvas || (layer.rawData ? getLayerCanvas(layer) : null)
+  if (!canvas) return
   const opacity = typeof layer.opacity === 'number' ? layer.opacity : 1
   context.save()
   context.globalAlpha = opacity
-  context.drawImage(layer.canvas, (layer.left || 0) + offsetX, (layer.top || 0) + offsetY)
+  context.drawImage(canvas, (layer.left || 0) + offsetX, (layer.top || 0) + offsetY)
   context.restore()
+  if (!layer.canvas) {
+    canvas.width = 0
+    canvas.height = 0
+  }
 }
 
 function sortCategoriesForRender(categories) {
@@ -3517,7 +3625,8 @@ function canvasToBlob(canvas, mime = 'image/png', quality) {
 }
 
 function hasRenderableCanvas(layer) {
-  return Boolean(layer?.canvas && layer.canvas.width && layer.canvas.height)
+  if (layer?.canvas?.width && layer.canvas.height) return true
+  return Boolean(layer?.rawData && Number(layer.right) > Number(layer.left) && Number(layer.bottom) > Number(layer.top))
 }
 
 function cleanName(value = 'Untitled') {
