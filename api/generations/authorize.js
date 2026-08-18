@@ -1,21 +1,20 @@
 import { readJson, requireMethod, requireTrustedOrigin, sendJson } from '../_lib/http.js'
 import { getDatabase } from '../_lib/db.js'
 import { consumeRateLimit } from '../_lib/rate-limit.js'
-import { readSession } from '../_lib/session.js'
+import { getOrCreateSession } from '../_lib/session.js'
 
 export default async function handler(request, response) {
   if (!requireMethod(request, response, 'POST') || !requireTrustedOrigin(request, response)) return
-  const session = await readSession(request)
-  if (!session) return sendJson(response, 401, { error: 'Sign in with your wallet before generating.' })
   try {
     const sql = getDatabase()
-    if (!(await consumeRateLimit(sql, request, 'authorize-generation', session.walletAddress, 30))) {
+    const session = await getOrCreateSession(request, response, sql)
+    if (!(await consumeRateLimit(sql, request, 'authorize-generation', session.accountId, 30))) {
       return sendJson(response, 429, { error: 'Too many generation attempts. Try again shortly.' })
     }
     const { idempotencyKey } = await readJson(request)
     if (!/^[0-9a-f-]{36}$/i.test(idempotencyKey || '')) return sendJson(response, 400, { error: 'A valid idempotency key is required.' })
     const rows = await sql`
-      SELECT * FROM authorize_generation(${session.walletAddress}, ${idempotencyKey}::uuid)
+      SELECT * FROM authorize_generation(${session.accountId}, ${idempotencyKey}::uuid)
     `
     sendJson(response, 200, {
       jobId: rows[0].job_id,

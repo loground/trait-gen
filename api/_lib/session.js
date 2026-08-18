@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
 import { getSessionSecret } from './config.js'
 
@@ -6,10 +7,11 @@ const SESSION_ISSUER = 'trait-forge'
 const SESSION_AUDIENCE = 'trait-forge-web'
 const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 30
 
-export async function createSessionToken(walletAddress) {
-  return new SignJWT({ wallet: walletAddress.toLowerCase() })
+export async function createSessionToken(accountId) {
+  const normalizedAccountId = accountId.toLowerCase()
+  return new SignJWT({ accountId: normalizedAccountId })
     .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
-    .setSubject(walletAddress.toLowerCase())
+    .setSubject(normalizedAccountId)
     .setIssuer(SESSION_ISSUER)
     .setAudience(SESSION_AUDIENCE)
     .setIssuedAt()
@@ -26,11 +28,26 @@ export async function readSession(request) {
       issuer: SESSION_ISSUER,
       audience: SESSION_AUDIENCE,
     })
-    if (!/^0x[a-f0-9]{40}$/.test(payload.sub || '')) return null
-    return { walletAddress: payload.sub }
+    const accountId = payload.sub || ''
+    const walletAddress = /^0x[a-f0-9]{40}$/.test(accountId) ? accountId : null
+    if (!walletAddress && !/^guest:[0-9a-f-]{36}$/.test(accountId)) return null
+    return { accountId, walletAddress }
   } catch {
     return null
   }
+}
+
+export async function getOrCreateSession(request, response, sql) {
+  const existing = await readSession(request)
+  if (existing) return existing
+  const accountId = `guest:${randomUUID()}`
+  await sql`
+    INSERT INTO wallet_accounts (wallet_address)
+    VALUES (${accountId})
+    ON CONFLICT (wallet_address) DO NOTHING
+  `
+  setSessionCookie(response, await createSessionToken(accountId))
+  return { accountId, walletAddress: null }
 }
 
 export function setSessionCookie(response, token) {

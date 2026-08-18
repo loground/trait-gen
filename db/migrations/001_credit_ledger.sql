@@ -1,11 +1,20 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS wallet_accounts (
-  wallet_address text PRIMARY KEY CHECK (wallet_address ~ '^0x[0-9a-f]{40}$'),
+  wallet_address text PRIMARY KEY,
   credit_balance integer NOT NULL DEFAULT 0 CHECK (credit_balance >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   last_login_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE wallet_accounts
+  DROP CONSTRAINT IF EXISTS wallet_accounts_wallet_address_check;
+ALTER TABLE wallet_accounts
+  ADD CONSTRAINT wallet_accounts_wallet_address_check
+  CHECK (
+    wallet_address ~ '^0x[0-9a-f]{40}$'
+    OR wallet_address ~ '^guest:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  );
 
 CREATE TABLE IF NOT EXISTS auth_nonces (
   id uuid PRIMARY KEY,

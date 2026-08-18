@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { decodeLayerPixels, getLayerCanvas, readPsd } from 'ag-psd'
 import JSZip from 'jszip'
-import { getAddress } from 'viem'
 import {
   Archive,
   ArrowDown,
@@ -15,7 +14,6 @@ import {
   KeyRound,
   Layers3,
   Loader2,
-  LogOut,
   Play,
   Plus,
   RotateCcw,
@@ -23,7 +21,6 @@ import {
   SlidersHorizontal,
   Trash2,
   Upload,
-  Wallet,
   X,
 } from 'lucide-react'
 import './App.css'
@@ -39,12 +36,8 @@ const METADATA_FILE_NAME = 'metadata-file.csv'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
 const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
-const HOODCHAN_CONTRACT_ADDRESS = '0x774db2207d26570f5638028839c816702a40abc2'
-const HOODCHAN_COLLECTION_URL = 'https://opensea.io/collection/h00dchan'
-const ROBINHOOD_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com'
 const GENERATION_CODE_URL = '/api/codes/redeem'
 const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
-const TOKEN_GATE_ENABLED = false
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
   webp: { mime: 'image/webp', extension: 'webp', label: 'WebP' },
@@ -78,13 +71,12 @@ function App() {
   const [samplePreviews, setSamplePreviews] = useState([])
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
-  const [walletGate, setWalletGate] = useState({ status: 'idle', address: '', balance: 0, message: '' })
   const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
   const [accessOpen, setAccessOpen] = useState(false)
   const [accessBusy, setAccessBusy] = useState(false)
   const [accessMessage, setAccessMessage] = useState('')
   const [generationCode, setGenerationCode] = useState('')
-  const [account, setAccount] = useState({ status: 'loading', walletAddress: '', credits: 0 })
+  const [account, setAccount] = useState({ status: 'loading', credits: 0 })
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
@@ -124,7 +116,6 @@ function App() {
   const positionCanvasDragRef = useRef(null)
   const draggedTraitRef = useRef(null)
   const traitFolderDragOccurredRef = useRef(false)
-  const walletCheckRef = useRef(0)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
 
   function acceptIntro() {
@@ -161,71 +152,24 @@ function App() {
   async function loadAccount() {
     try {
       const response = await fetch('/api/me', { credentials: 'include' })
-      if (response.status === 401) {
-        setAccount({ status: 'anonymous', walletAddress: '', credits: 0 })
-        return null
-      }
       if (!response.ok) throw new Error('Could not load generation credits.')
       const result = await response.json()
       const nextAccount = {
         status: 'authenticated',
-        walletAddress: result.walletAddress,
         credits: Math.max(0, Number(result.credits) || 0),
       }
       setAccount(nextAccount)
       return nextAccount
     } catch {
-      setAccount({ status: 'unavailable', walletAddress: '', credits: 0 })
+      setAccount({ status: 'unavailable', credits: 0 })
       return null
     }
   }
 
-  async function authenticateWallet() {
-    const provider = window.ethereum
-    if (!provider?.request) throw new Error('Install or open an EVM wallet to redeem a generation code.')
-    const accounts = await provider.request({ method: 'eth_requestAccounts' })
-    if (!accounts?.[0]) throw new Error('No wallet account was selected.')
-    const address = getAddress(accounts[0])
-    if (account.status === 'authenticated' && account.walletAddress.toLowerCase() === address.toLowerCase()) return address
-
-    const nonceResponse = await fetch('/api/auth/nonce', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ address }),
-    })
-    if (!nonceResponse.ok) throw new Error(await readResponseError(nonceResponse, 'Could not start wallet sign-in.'))
-    const nonceResult = await nonceResponse.json()
-    const chainId = Number.parseInt(await provider.request({ method: 'eth_chainId' }), 16)
-    const issuedAt = new Date()
-    const message = buildSiweMessage({
-      domain: window.location.host,
-      address,
-      statement: 'Sign in to Trait Forge to redeem and use generation codes.',
-      uri: window.location.origin,
-      version: '1',
-      chainId,
-      nonce: nonceResult.nonce,
-      issuedAt: issuedAt.toISOString(),
-      expirationTime: new Date(issuedAt.getTime() + 10 * 60 * 1000).toISOString(),
-    })
-    const signature = await provider.request({ method: 'personal_sign', params: [message, address] })
-    const verifyResponse = await fetch('/api/auth/verify', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message, signature, nonceId: nonceResult.nonceId }),
-    })
-    if (!verifyResponse.ok) throw new Error(await readResponseError(verifyResponse, 'Wallet sign-in failed.'))
-    await loadAccount()
-    return address
-  }
-
-  async function authorizeAndGenerate({ authenticated = false } = {}) {
+  async function authorizeAndGenerate() {
     setAccessBusy(true)
     setAccessMessage('Authorizing one generation credit…')
     try {
-      if (!authenticated) await authenticateWallet()
       const response = await fetch('/api/generations/authorize', {
         method: 'POST',
         credentials: 'include',
@@ -255,7 +199,6 @@ function App() {
     setAccessBusy(true)
     setAccessMessage('Checking your code…')
     try {
-      await authenticateWallet()
       const response = await fetch(GENERATION_CODE_URL, {
         method: 'POST',
         credentials: 'include',
@@ -266,7 +209,7 @@ function App() {
       const result = await response.json()
       setGenerationCode('')
       setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
-      await authorizeAndGenerate({ authenticated: true })
+      await authorizeAndGenerate()
     } catch (error) {
       setAccessMessage(getErrorMessage(error, 'Could not redeem that code.'))
     } finally {
@@ -329,114 +272,14 @@ function App() {
     [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements],
   )
 
-  async function verifyWalletAccess(address) {
-    const requestId = walletCheckRef.current + 1
-    walletCheckRef.current = requestId
-    setWalletGate({ status: 'checking', address, balance: 0, message: 'Checking HOODCHAN ownership...' })
-    try {
-      const balance = await readHoodchanBalance(address)
-      if (requestId !== walletCheckRef.current) return false
-      if (balance > 0n) {
-        setWalletGate({ status: 'holder', address, balance: Number(balance), message: '' })
-        return true
-      }
-      setWalletGate({ status: 'denied', address, balance: 0, message: 'This wallet does not hold a HOODCHAN NFT.' })
-      return false
-    } catch (error) {
-      if (requestId !== walletCheckRef.current) return false
-      setWalletGate({ status: 'error', address, balance: 0, message: getErrorMessage(error, 'Could not verify NFT ownership.') })
-      return false
-    }
-  }
-
-  async function connectWallet() {
-    const provider = window.ethereum
-    if (!provider?.request) {
-      setWalletGate({ status: 'error', address: '', balance: 0, message: 'Open this page in an EVM wallet browser or install a browser wallet.' })
-      return
-    }
-    setWalletGate((current) => ({ ...current, status: 'connecting', message: 'Connecting wallet...' }))
-    try {
-      if (walletGate.address) {
-        try {
-          await provider.request({
-            method: 'wallet_requestPermissions',
-            params: [{ eth_accounts: {} }],
-          })
-        } catch (permissionError) {
-          if (permissionError?.code === 4001) throw permissionError
-          const unsupportedPermissionMethod = [-32601, -32004, 4200].includes(permissionError?.code)
-          if (!unsupportedPermissionMethod) throw permissionError
-        }
-      }
-      const accounts = await provider.request({ method: 'eth_requestAccounts' })
-      const address = accounts?.[0]
-      if (!address) throw new Error('No wallet account was selected.')
-      await verifyWalletAccess(address)
-    } catch (error) {
-      const message = error?.code === 4001 ? 'Wallet connection was cancelled.' : getErrorMessage(error, 'Could not connect the wallet.')
-      setWalletGate({ status: 'error', address: '', balance: 0, message })
-    }
-  }
-
-  async function disconnectWallet() {
-    walletCheckRef.current += 1
-    const provider = window.ethereum
-    try {
-      await provider?.request?.({
-        method: 'wallet_revokePermissions',
-        params: [{ eth_accounts: {} }],
-      })
-    } catch {
-      // Some injected wallets do not support permission revocation. The local
-      // session is still cleared so the token gate closes immediately.
-    }
-    setWalletGate({ status: 'idle', address: '', balance: 0, message: '' })
-  }
-
   async function ensureHolderAccess() {
-    if (!TOKEN_GATE_ENABLED) return true
-    if (walletGate.status !== 'holder' || !walletGate.address) return false
-    try {
-      const balance = await readHoodchanBalance(walletGate.address)
-      if (balance > 0n) return true
-      setWalletGate({ status: 'denied', address: walletGate.address, balance: 0, message: 'This wallet no longer holds a HOODCHAN NFT.' })
-    } catch (error) {
-      setWalletGate({ status: 'error', address: walletGate.address, balance: 0, message: getErrorMessage(error, 'Could not verify NFT ownership.') })
-    }
-    return false
+    return true
   }
 
   useEffect(() => {
     loadAccount()
   }, [])
 
-  useEffect(() => {
-    if (!TOKEN_GATE_ENABLED) return undefined
-    const provider = window.ethereum
-    if (!provider?.request) return undefined
-    let active = true
-    const handleAccountsChanged = (accounts = []) => {
-      walletCheckRef.current += 1
-      const address = accounts[0]
-      if (!address) {
-        setWalletGate({ status: 'idle', address: '', balance: 0, message: '' })
-        return
-      }
-      verifyWalletAccess(address)
-    }
-
-    provider.request({ method: 'eth_accounts' })
-      .then((accounts) => {
-        if (active && accounts?.[0]) verifyWalletAccess(accounts[0])
-      })
-      .catch(() => {})
-    provider.on?.('accountsChanged', handleAccountsChanged)
-    return () => {
-      active = false
-      provider.removeListener?.('accountsChanged', handleAccountsChanged)
-    }
-  }, [])
 
   useEffect(
     () => () => {
@@ -1673,35 +1516,6 @@ function App() {
     return `translate(${(deltaX / source.width) * 100}%, ${(deltaY / source.height) * 100}%)`
   }
 
-  if (TOKEN_GATE_ENABLED && walletGate.status !== 'holder') {
-    const checkingWallet = walletGate.status === 'connecting' || walletGate.status === 'checking'
-    const choosingAnotherWallet = Boolean(walletGate.address)
-    return (
-      <main className="wallet-gate-shell">
-        <section className="wallet-gate-card" aria-live="polite">
-          <div className="wallet-gate-icon"><Wallet size={30} /></div>
-          <p className="eyebrow">HOODCHAN holders only</p>
-          <h1>Connect to enter Trait Forge</h1>
-          <p className="wallet-gate-description">Hold at least one HOODCHAN NFT in the connected wallet to upload traits and generate a collection.</p>
-          {walletGate.address && <code className="wallet-address">{formatWalletAddress(walletGate.address)}</code>}
-          {walletGate.message && <p className={`wallet-gate-message ${walletGate.status}`}>{walletGate.message}</p>}
-          <button
-            className="wallet-connect-action"
-            type="button"
-            disabled={checkingWallet}
-            onClick={connectWallet}
-          >
-            {checkingWallet ? <Loader2 className="spin" size={18} /> : <Wallet size={18} />}
-            {checkingWallet ? 'Connecting wallet...' : choosingAnotherWallet ? 'Choose another wallet' : 'Connect wallet'}
-          </button>
-          <a className="wallet-buy-link" href={HOODCHAN_COLLECTION_URL} target="_blank" rel="noreferrer">
-            Buy HOODCHAN on OpenSea
-          </a>
-        </section>
-      </main>
-    )
-  }
-
   return (
     <main className="app-shell" style={{ '--preview-background': previewBackground }}>
       <section className="topbar">
@@ -1714,28 +1528,6 @@ function App() {
             {busy ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
             <span>{status}</span>
           </div>
-          {TOKEN_GATE_ENABLED && (
-            <div className="wallet-session">
-              <Wallet size={16} />
-              <div>
-                <code>{formatWalletAddress(walletGate.address)}</code>
-                <span>{walletGate.balance} HOODCHAN</span>
-              </div>
-              <button type="button" onClick={disconnectWallet} aria-label="Disconnect wallet">
-                <LogOut size={16} />
-                Disconnect
-              </button>
-            </div>
-          )}
-          {account.status === 'authenticated' && (
-            <div className="wallet-session">
-              <Wallet size={16} />
-              <div>
-                <code>{formatWalletAddress(account.walletAddress)}</code>
-                <span>{account.credits} generation credit{account.credits === 1 ? '' : 's'}</span>
-              </div>
-            </div>
-          )}
         </div>
       </section>
 
@@ -2110,7 +1902,7 @@ function App() {
                   <span className="payment-option-icon"><KeyRound size={24} /></span>
                   <div>
                     <h3>Redeem your code</h3>
-                    <p>Your wallet signs a free message so credits remain available on future visits.</p>
+                    <p>Credits stay available in this browser after the code is redeemed.</p>
                   </div>
                 </div>
                 <label>
@@ -2833,10 +2625,6 @@ function readStoredValue(key) {
   }
 }
 
-function buildSiweMessage({ domain, address, statement, uri, version, chainId, nonce, issuedAt, expirationTime }) {
-  return `${domain} wants you to sign in with your Ethereum account:\n${address}\n\n${statement}\n\nURI: ${uri}\nVersion: ${version}\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expirationTime}`
-}
-
 function writeStoredValue(key, value) {
   try {
     localStorage.setItem(key, value)
@@ -2852,30 +2640,6 @@ async function readResponseError(response, fallback) {
   } catch {
     return fallback
   }
-}
-
-async function readHoodchanBalance(address) {
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address || '')) throw new Error('The connected wallet address is invalid.')
-  const data = `0x70a08231${address.slice(2).toLowerCase().padStart(64, '0')}`
-  const response = await fetch(ROBINHOOD_RPC_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: HOODCHAN_CONTRACT_ADDRESS, data }, 'latest'],
-    }),
-  })
-  if (!response.ok) throw new Error('Robinhood Chain did not respond to the ownership check.')
-  const payload = await response.json()
-  if (payload.error) throw new Error(payload.error.message || 'The ownership check failed.')
-  if (!/^0x[a-fA-F0-9]+$/.test(payload.result || '')) throw new Error('The ownership check returned an invalid balance.')
-  return BigInt(payload.result)
-}
-
-function formatWalletAddress(address) {
-  return address ? `${address.slice(0, 6)}…${address.slice(-4)}` : ''
 }
 
 function ManagerTraitPreview({ traitKey, url, label }) {

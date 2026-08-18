@@ -12,7 +12,7 @@ npm run dev
 ```
 
 ZIP generation is code-gated in development and production. A valid code grants
-generation credits to a signed-in wallet; no payment is requested.
+generation credits to an anonymous browser session; no wallet or payment is required.
 
 ## Production setup
 
