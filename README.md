@@ -11,8 +11,8 @@ npm install
 npm run dev
 ```
 
-ZIP generation runs directly in the browser and is free in development and
-production. It does not require a wallet, generation code, credit, or payment.
+ZIP generation is code-gated in development and production. A valid code grants
+generation credits to a signed-in wallet; no payment is requested.
 
 ## Production setup
 
@@ -33,6 +33,12 @@ Create a private generation code from a trusted terminal:
 
 ```bash
 CODE_PEPPER=... DATABASE_URL=... npm run code:create -- --credits 1 --uses 1
+```
+
+Create a batch of 25 single-use, one-generation codes:
+
+```bash
+CODE_PEPPER=... DATABASE_URL=... npm run code:create -- --count 25 --credits 1 --uses 1
 ```
 
 Never expose database, session, RPC, Blob, or code secrets through a

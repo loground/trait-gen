@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { decodeLayerPixels, getLayerCanvas, readPsd } from 'ag-psd'
 import JSZip from 'jszip'
+import { getAddress } from 'viem'
 import {
   Archive,
   ArrowDown,
@@ -11,6 +12,7 @@ import {
   Eye,
   FolderOpen,
   ImagePlus,
+  KeyRound,
   Layers3,
   Loader2,
   LogOut,
@@ -40,6 +42,7 @@ const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
 const HOODCHAN_CONTRACT_ADDRESS = '0x774db2207d26570f5638028839c816702a40abc2'
 const HOODCHAN_COLLECTION_URL = 'https://opensea.io/collection/h00dchan'
 const ROBINHOOD_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com'
+const GENERATION_CODE_URL = '/api/codes/redeem'
 const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
 const TOKEN_GATE_ENABLED = false
 const OUTPUT_FORMATS = {
@@ -77,6 +80,11 @@ function App() {
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
   const [walletGate, setWalletGate] = useState({ status: 'idle', address: '', balance: 0, message: '' })
   const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
+  const [accessOpen, setAccessOpen] = useState(false)
+  const [accessBusy, setAccessBusy] = useState(false)
+  const [accessMessage, setAccessMessage] = useState('')
+  const [generationCode, setGenerationCode] = useState('')
+  const [account, setAccount] = useState({ status: 'loading', walletAddress: '', credits: 0 })
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
@@ -131,7 +139,12 @@ function App() {
       setStatus(generationError)
       return
     }
-    await generateCollection()
+    if (account.credits > 0) {
+      await authorizeAndGenerate()
+      return
+    }
+    setAccessMessage('')
+    setAccessOpen(true)
   }
 
   function getCollectionGenerationError(activeSource) {
@@ -143,6 +156,122 @@ function App() {
       return 'No valid editions remain. Remove a trait rule or restore more traits.'
     }
     return ''
+  }
+
+  async function loadAccount() {
+    try {
+      const response = await fetch('/api/me', { credentials: 'include' })
+      if (response.status === 401) {
+        setAccount({ status: 'anonymous', walletAddress: '', credits: 0 })
+        return null
+      }
+      if (!response.ok) throw new Error('Could not load generation credits.')
+      const result = await response.json()
+      const nextAccount = {
+        status: 'authenticated',
+        walletAddress: result.walletAddress,
+        credits: Math.max(0, Number(result.credits) || 0),
+      }
+      setAccount(nextAccount)
+      return nextAccount
+    } catch {
+      setAccount({ status: 'unavailable', walletAddress: '', credits: 0 })
+      return null
+    }
+  }
+
+  async function authenticateWallet() {
+    const provider = window.ethereum
+    if (!provider?.request) throw new Error('Install or open an EVM wallet to redeem a generation code.')
+    const accounts = await provider.request({ method: 'eth_requestAccounts' })
+    if (!accounts?.[0]) throw new Error('No wallet account was selected.')
+    const address = getAddress(accounts[0])
+    if (account.status === 'authenticated' && account.walletAddress.toLowerCase() === address.toLowerCase()) return address
+
+    const nonceResponse = await fetch('/api/auth/nonce', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address }),
+    })
+    if (!nonceResponse.ok) throw new Error(await readResponseError(nonceResponse, 'Could not start wallet sign-in.'))
+    const nonceResult = await nonceResponse.json()
+    const chainId = Number.parseInt(await provider.request({ method: 'eth_chainId' }), 16)
+    const issuedAt = new Date()
+    const message = buildSiweMessage({
+      domain: window.location.host,
+      address,
+      statement: 'Sign in to Trait Forge to redeem and use generation codes.',
+      uri: window.location.origin,
+      version: '1',
+      chainId,
+      nonce: nonceResult.nonce,
+      issuedAt: issuedAt.toISOString(),
+      expirationTime: new Date(issuedAt.getTime() + 10 * 60 * 1000).toISOString(),
+    })
+    const signature = await provider.request({ method: 'personal_sign', params: [message, address] })
+    const verifyResponse = await fetch('/api/auth/verify', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message, signature, nonceId: nonceResult.nonceId }),
+    })
+    if (!verifyResponse.ok) throw new Error(await readResponseError(verifyResponse, 'Wallet sign-in failed.'))
+    await loadAccount()
+    return address
+  }
+
+  async function authorizeAndGenerate({ authenticated = false } = {}) {
+    setAccessBusy(true)
+    setAccessMessage('Authorizing one generation credit…')
+    try {
+      if (!authenticated) await authenticateWallet()
+      const response = await fetch('/api/generations/authorize', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'Could not authorize generation.'))
+      const result = await response.json()
+      setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
+      setAccessOpen(false)
+      await generateCollection()
+    } catch (error) {
+      setAccessMessage(getErrorMessage(error, 'Could not authorize generation.'))
+      setAccessOpen(true)
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function redeemGenerationCode(event) {
+    event.preventDefault()
+    const code = generationCode.trim()
+    if (!code) {
+      setAccessMessage('Enter a generation code.')
+      return
+    }
+    setAccessBusy(true)
+    setAccessMessage('Checking your code…')
+    try {
+      await authenticateWallet()
+      const response = await fetch(GENERATION_CODE_URL, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'That code is invalid or unavailable.'))
+      const result = await response.json()
+      setGenerationCode('')
+      setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
+      await authorizeAndGenerate({ authenticated: true })
+    } catch (error) {
+      setAccessMessage(getErrorMessage(error, 'Could not redeem that code.'))
+    } finally {
+      setAccessBusy(false)
+    }
   }
 
   const combinationStructureKey = getCombinationStructureKey(source)
@@ -277,6 +406,10 @@ function App() {
     }
     return false
   }
+
+  useEffect(() => {
+    loadAccount()
+  }, [])
 
   useEffect(() => {
     if (!TOKEN_GATE_ENABLED) return undefined
@@ -1594,6 +1727,15 @@ function App() {
               </button>
             </div>
           )}
+          {account.status === 'authenticated' && (
+            <div className="wallet-session">
+              <Wallet size={16} />
+              <div>
+                <code>{formatWalletAddress(account.walletAddress)}</code>
+                <span>{account.credits} generation credit{account.credits === 1 ? '' : 's'}</span>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -1910,7 +2052,9 @@ function App() {
 
           <button className="primary-action" type="button" onClick={startGeneration} disabled={busy || !source}>
             {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            Generate ZIP · Free
+            {account.credits > 0
+              ? `Generate ZIP · ${account.credits} credit${account.credits === 1 ? '' : 's'}`
+              : 'Enter code to generate ZIP'}
           </button>
 
           <button className="download-link" type="button" onClick={downloadProjectBackup} disabled={busy || !source}>
@@ -1938,12 +2082,48 @@ function App() {
               and export images with metadata for your upcoming collection.
             </p>
             <div className="intro-price-note">
-              ZIP generation is free and does not require payment, a code, or a wallet connection.
+              ZIP generation requires a valid generation code. Codes grant free generation credits and no payment is requested.
             </div>
             <button className="primary-action" type="button" onClick={acceptIntro}>
               <CheckCircle2 size={18} />
               I understand and agree
             </button>
+          </section>
+        </div>
+      )}
+
+      {accessOpen && (
+        <div className="modal-backdrop payment-backdrop" role="presentation">
+          <section className="payment-modal" role="dialog" aria-modal="true" aria-labelledby="access-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Generation access</p>
+                <h2 id="access-title">Enter a generation code</h2>
+              </div>
+              <button type="button" aria-label="Close generation access" disabled={accessBusy} onClick={() => setAccessOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="payment-panel">
+              <form className="payment-option-content" onSubmit={redeemGenerationCode}>
+                <div className="payment-option-heading">
+                  <span className="payment-option-icon"><KeyRound size={24} /></span>
+                  <div>
+                    <h3>Redeem your code</h3>
+                    <p>Your wallet signs a free message so credits remain available on future visits.</p>
+                  </div>
+                </div>
+                <label>
+                  Generation code
+                  <input type="text" autoComplete="off" placeholder="TF-…" value={generationCode} disabled={accessBusy} onChange={(event) => setGenerationCode(event.target.value)} />
+                </label>
+                <button className="primary-action" type="submit" disabled={accessBusy}>
+                  {accessBusy ? <Loader2 className="spin" size={18} /> : <KeyRound size={18} />}
+                  Apply code and generate
+                </button>
+                {accessMessage && <p className="payment-message" aria-live="polite">{accessMessage}</p>}
+              </form>
+            </div>
           </section>
         </div>
       )}
@@ -2653,11 +2833,24 @@ function readStoredValue(key) {
   }
 }
 
+function buildSiweMessage({ domain, address, statement, uri, version, chainId, nonce, issuedAt, expirationTime }) {
+  return `${domain} wants you to sign in with your Ethereum account:\n${address}\n\n${statement}\n\nURI: ${uri}\nVersion: ${version}\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expirationTime}`
+}
+
 function writeStoredValue(key, value) {
   try {
     localStorage.setItem(key, value)
   } catch {
     // Access still works for this tab when browser storage is unavailable.
+  }
+}
+
+async function readResponseError(response, fallback) {
+  try {
+    const payload = await response.json()
+    return payload?.message || payload?.error || fallback
+  } catch {
+    return fallback
   }
 }
 
