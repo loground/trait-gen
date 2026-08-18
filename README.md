@@ -11,8 +11,10 @@ npm install
 npm run dev
 ```
 
-ZIP generation is code-gated in development and production. A valid code grants
-generation credits to an anonymous browser session; no wallet or payment is required.
+ZIP generation is code-gated on deployed hosts. A valid code grants generation
+credits to an anonymous browser session; no wallet or payment is required.
+Loopback hosts (`localhost`, `127.0.0.1`, and `::1`) bypass codes so local
+development and previews remain free.
 
 ## Production setup
 

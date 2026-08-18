@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { decodeLayerPixels, getLayerCanvas, readPsd } from 'ag-psd'
 import JSZip from 'jszip'
+import { GIFEncoder, applyPalette, quantize } from 'gifenc'
 import {
   Archive,
   ArrowDown,
@@ -9,6 +10,7 @@ import {
   Calculator,
   CheckCircle2,
   Eye,
+  Film,
   FolderOpen,
   ImagePlus,
   KeyRound,
@@ -40,6 +42,7 @@ const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
 const X_SHARE_TEXT = 'I just forged the traits for my upcoming NFT collection on trait-forge.art, it was easy and cool'
 const GENERATION_CODE_URL = '/api/codes/redeem'
 const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
+const LOCAL_FREE_GENERATION = isLoopbackHostname(globalThis.location?.hostname)
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
   webp: { mime: 'image/webp', extension: 'webp', label: 'WebP' },
@@ -64,6 +67,10 @@ const emptyPositionRuleDraft = { first: '', second: '', firstX: 0, firstY: 0, se
 const emptyConditionDraft = { category: '', requiredTrait: '' }
 const emptyFolderConflictDraft = { first: '', second: '' }
 
+function isLoopbackHostname(hostname = '') {
+  return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
+}
+
 function App() {
   const [project, setProject] = useState(DEFAULT_PROJECT)
   const [source, setSource] = useState(null)
@@ -71,7 +78,10 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
   const [samplePreviews, setSamplePreviews] = useState([])
+  const [sampleCollage, setSampleCollage] = useState(null)
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
+  const [gifFrameCount, setGifFrameCount] = useState(7)
+  const [gifBusy, setGifBusy] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
   const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
   const [accessOpen, setAccessOpen] = useState(false)
@@ -110,6 +120,7 @@ function App() {
   const previewTimerRef = useRef(null)
   const previewRequestRef = useRef(0)
   const samplePreviewUrlsRef = useRef([])
+  const sampleCollageUrlRef = useRef('')
   const managerPreviewUrlsRef = useRef({})
   const managerPreviewSignaturesRef = useRef({})
   const managerPairPreviewUrlRef = useRef('')
@@ -130,6 +141,10 @@ function App() {
     const generationError = getCollectionGenerationError(source)
     if (generationError) {
       setStatus(generationError)
+      return
+    }
+    if (LOCAL_FREE_GENERATION) {
+      await generateCollection()
       return
     }
     if (account.credits > 0) {
@@ -233,6 +248,9 @@ function App() {
   const maxEditions = maxEditionsInfo.count
   const maxEditionsCapped = maxEditionsInfo.capped
   const samplePreviewCount = source ? Math.min(16, Math.max(1, maxEditions)) : 16
+  const isMobileShareDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
+  const pasteModifier = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'
 
   const sourceSummary = useMemo(() => {
     if (!source) return []
@@ -279,6 +297,10 @@ function App() {
   }
 
   useEffect(() => {
+    if (LOCAL_FREE_GENERATION) {
+      setAccount({ status: 'local', credits: 0 })
+      return
+    }
     loadAccount()
   }, [])
 
@@ -291,6 +313,7 @@ function App() {
       if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
       if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
       samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      if (sampleCollageUrlRef.current) URL.revokeObjectURL(sampleCollageUrlRef.current)
     },
     [],
   )
@@ -1226,7 +1249,10 @@ function App() {
   function clearSamplePreviews() {
     samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     samplePreviewUrlsRef.current = []
+    if (sampleCollageUrlRef.current) URL.revokeObjectURL(sampleCollageUrlRef.current)
+    sampleCollageUrlRef.current = ''
     setSamplePreviews([])
+    setSampleCollage(null)
   }
 
   function closeSamplePreview() {
@@ -1234,36 +1260,128 @@ function App() {
     clearSamplePreviews()
   }
 
-  async function shareSamplePreview(preview) {
-    const extension = preview.blob.type === 'image/jpeg' ? 'jpg' : (preview.blob.type.split('/')[1] || 'png')
-    const fileName = `${slugify(project.name)}-preview-${preview.edition}.${extension}`
-    const file = new File([preview.blob], fileName, { type: preview.blob.type })
+  async function shareSampleCollage() {
+    if (!sampleCollage) return
+    const fileName = `${slugify(project.name)}-sample-collage.png`
+    const file = new File([sampleCollage.blob], fileName, { type: 'image/png' })
 
-    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+    if (isMobileShareDevice && navigator.share && navigator.canShare?.({ files: [file] })) {
       try {
         await navigator.share({
           title: 'Trait Forge preview',
           text: X_SHARE_TEXT,
           files: [file],
         })
-        setStatus(`Shared preview #${preview.edition}.`)
+        setStatus('Shared the collection sample collage.')
       } catch (error) {
-        if (error?.name !== 'AbortError') setStatus('Could not open image sharing. Try downloading the preview instead.')
+        if (error?.name !== 'AbortError') setStatus('Could not open image sharing. Try downloading the collage instead.')
       }
       return
     }
 
-    const download = document.createElement('a')
-    download.href = preview.url
-    download.download = fileName
-    document.body.appendChild(download)
-    download.click()
-    download.remove()
-
     const intent = new URL('https://x.com/intent/tweet')
     intent.searchParams.set('text', X_SHARE_TEXT)
-    window.open(intent.toString(), '_blank', 'noopener,noreferrer')
-    setStatus(`Preview #${preview.edition} downloaded. Attach it to the X post that just opened.`)
+    let clipboardPromise = null
+    if (navigator.clipboard?.write && globalThis.ClipboardItem) {
+      try {
+        clipboardPromise = navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': sampleCollage.blob }),
+        ])
+      } catch {
+        clipboardPromise = null
+      }
+    }
+    const composer = window.open(intent.toString(), '_blank')
+    if (composer) composer.opener = null
+    else window.location.assign(intent.toString())
+    let copied = false
+    if (clipboardPromise) {
+      try {
+        await clipboardPromise
+        copied = true
+      } catch {
+        copied = false
+      }
+    }
+    if (copied) {
+      setStatus('Collage copied. Paste it into the X post composer with Ctrl+V or Command+V.')
+      return
+    }
+    downloadBlobUrl(sampleCollage.url, fileName)
+    setStatus('Collage downloaded. Attach it to the X post that just opened.')
+  }
+
+  async function generatePreviewGif() {
+    const frameCount = Math.min(gifFrameCount, samplePreviews.length, 7)
+    if (frameCount < 5 || gifBusy) {
+      setStatus('Render at least five collection samples before generating a GIF.')
+      return
+    }
+
+    setGifBusy(true)
+    setStatus(`Encoding a ${frameCount}-frame collection GIF…`)
+    try {
+      const size = 600
+      const canvas = document.createElement('canvas')
+      canvas.width = size
+      canvas.height = size
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (!context) throw new Error('Could not create the GIF canvas.')
+      const encoder = GIFEncoder()
+
+      for (let index = 0; index < frameCount; index += 1) {
+        const { image, cleanup } = await decodeCollageImage(samplePreviews[index].blob)
+        context.fillStyle = previewBackground
+        context.fillRect(0, 0, size, size)
+        const scale = Math.min(size / image.width, size / image.height)
+        const width = image.width * scale
+        const height = image.height * scale
+        context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height)
+        cleanup()
+
+        const rgba = context.getImageData(0, 0, size, size).data
+        const palette = quantize(rgba, 128)
+        const indexed = applyPalette(rgba, palette)
+        encoder.writeFrame(indexed, size, size, {
+          palette,
+          delay: 420,
+          repeat: 0,
+        })
+        setStatus(`Encoded GIF frame ${index + 1} of ${frameCount}…`)
+        await waitForPaint()
+      }
+
+      context.fillStyle = '#0f1419'
+      context.fillRect(0, 0, size, size)
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      context.fillStyle = '#8fa4bd'
+      context.font = '800 30px Arial, sans-serif'
+      context.fillText('COLLECTION GENERATED ON', size / 2, size / 2 - 48)
+      context.fillStyle = '#ffffff'
+      context.font = '900 58px Arial, sans-serif'
+      context.fillText('trait-forge.art', size / 2, size / 2 + 18)
+      context.fillStyle = '#fff2a8'
+      context.fillRect(size / 2 - 118, size / 2 + 66, 236, 7)
+      const endCardRgba = context.getImageData(0, 0, size, size).data
+      const endCardPalette = quantize(endCardRgba, 128)
+      encoder.writeFrame(applyPalette(endCardRgba, endCardPalette), size, size, {
+        palette: endCardPalette,
+        delay: 850,
+        repeat: 0,
+      })
+
+      encoder.finish()
+      const gifBlob = new Blob([encoder.bytes()], { type: 'image/gif' })
+      const gifUrl = URL.createObjectURL(gifBlob)
+      downloadBlobUrl(gifUrl, `${slugify(project.name)}-preview.gif`)
+      window.setTimeout(() => URL.revokeObjectURL(gifUrl), 30_000)
+      setStatus(`Downloaded a ${frameCount}-image collection GIF with a Trait Forge end card.`)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not generate the collection GIF.'))
+    } finally {
+      setGifBusy(false)
+    }
   }
 
   async function generateSamplePreview() {
@@ -1318,9 +1436,18 @@ function App() {
       }
       samplePreviewUrlsRef.current = createdUrls
       setSamplePreviews(previews)
+      setGifFrameCount(Math.min(7, previews.length))
+      setStatus('Building an 8-item sharing collage…')
+      const collageBlob = await buildSampleCollage(previews.slice(0, 8), project.name, previewBackground)
+      const collageUrl = URL.createObjectURL(collageBlob)
+      sampleCollageUrlRef.current = collageUrl
+      setSampleCollage({ blob: collageBlob, url: collageUrl, count: Math.min(8, previews.length) })
       setStatus(`Preview ready. These ${previews.length} samples use the current seed, rarities, and trait rules.`)
     } catch (error) {
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
+      samplePreviewUrlsRef.current = []
+      setSamplePreviews([])
+      setSampleCollage(null)
       setSamplePreviewOpen(false)
       setStatus(getErrorMessage(error, 'Could not render sample artworks.'))
     } finally {
@@ -1879,7 +2006,9 @@ function App() {
 
           <button className="primary-action" type="button" onClick={startGeneration} disabled={busy || !source}>
             {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            {account.credits > 0
+            {LOCAL_FREE_GENERATION
+              ? 'Generate ZIP · Free local mode'
+              : account.credits > 0
               ? `Generate ZIP · ${account.credits} credit${account.credits === 1 ? '' : 's'}`
               : 'Enter code to generate ZIP'}
           </button>
@@ -1909,7 +2038,9 @@ function App() {
               and export images with metadata for your upcoming collection.
             </p>
             <div className="intro-price-note">
-              ZIP generation requires a valid generation code. Codes grant free generation credits and no payment is requested.
+              {LOCAL_FREE_GENERATION
+                ? 'Local development mode is free and does not require a generation code.'
+                : 'ZIP generation requires a valid generation code. Codes grant free generation credits and no payment is requested.'}
             </div>
             <button className="primary-action" type="button" onClick={acceptIntro}>
               <CheckCircle2 size={18} />
@@ -1963,7 +2094,7 @@ function App() {
                 <p className="eyebrow">Before ZIP generation</p>
                 <h2>Collection samples</h2>
               </div>
-              <button type="button" aria-label="Close sample preview" disabled={busy} onClick={closeSamplePreview}>
+              <button type="button" aria-label="Close sample preview" disabled={busy || gifBusy} onClick={closeSamplePreview}>
                 <X size={18} />
               </button>
             </header>
@@ -1974,13 +2105,7 @@ function App() {
                     <div style={{ '--preview-background': previewBackground }}>
                       <img src={preview.url} alt={`Sample artwork ${preview.edition}`} />
                     </div>
-                    <figcaption>
-                      <span>#{preview.edition}</span>
-                      <button type="button" onClick={() => shareSamplePreview(preview)}>
-                        <Share2 size={14} />
-                        Share to X
-                      </button>
-                    </figcaption>
+                    <figcaption>#{preview.edition}</figcaption>
                   </figure>
                 ))}
               </div>
@@ -1991,7 +2116,32 @@ function App() {
               </div>
             )}
             <footer className="sample-preview-footer">
-              Samples use the current seed, rarities, positions, and compatibility rules. Nothing is downloaded yet.
+              {isMobileShareDevice ? (
+                <span>Shares the collage image and composed message through your mobile share sheet.</span>
+              ) : (
+                <div className="sample-preview-share-instruction">
+                  <span>After the X composer opens, paste the collage:</span>
+                  <strong><kbd>{pasteModifier}</kbd><b>+</b><kbd>V</kbd></strong>
+                </div>
+              )}
+              <div className="sample-preview-footer-actions">
+                <label>
+                  GIF frames
+                  <select value={gifFrameCount} disabled={gifBusy || samplePreviews.length < 5} onChange={(event) => setGifFrameCount(Number(event.target.value))}>
+                    {[5, 6, 7].filter((count) => count <= samplePreviews.length).map((count) => (
+                      <option value={count} key={count}>{count}</option>
+                    ))}
+                  </select>
+                </label>
+                <button className="gif-preview-action" type="button" disabled={gifBusy || samplePreviews.length < 5} onClick={generatePreviewGif}>
+                  {gifBusy ? <Loader2 className="spin" size={16} /> : <Film size={16} />}
+                  {gifBusy ? 'Generating GIF…' : 'Generate GIF'}
+                </button>
+                <button type="button" disabled={!sampleCollage || busy} onClick={shareSampleCollage}>
+                  <Share2 size={16} />
+                  Share {sampleCollage?.count || 8}-item collage to X
+                </button>
+              </div>
             </footer>
           </section>
         </div>
@@ -2672,6 +2822,105 @@ function writeStoredValue(key, value) {
   } catch {
     // Access still works for this tab when browser storage is unavailable.
   }
+}
+
+async function buildSampleCollage(previews, projectName, background = '#ffffff') {
+  if (!previews.length) throw new Error('No preview images are available for the collage.')
+  const canvas = document.createElement('canvas')
+  canvas.width = 1600
+  canvas.height = 1000
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Could not create the collage canvas.')
+
+  const padding = 32
+  const gap = 18
+  const columns = 4
+  const rows = 2
+  const gridTop = 170
+  const gridBottom = 920
+  const cellWidth = (canvas.width - padding * 2 - gap * (columns - 1)) / columns
+  const cellHeight = (gridBottom - gridTop - gap * (rows - 1)) / rows
+
+  context.fillStyle = '#f3f6fa'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.fillStyle = '#59708d'
+  context.font = '700 28px Arial, sans-serif'
+  context.fillText('TRAIT FORGE', padding, 52)
+  context.fillStyle = '#111923'
+  context.font = '800 58px Arial, sans-serif'
+  context.fillText('COLLECTION SAMPLES', padding, 116)
+  context.fillStyle = '#607188'
+  context.font = '500 25px Arial, sans-serif'
+  context.fillText(`${projectName || 'Upcoming NFT Collection'} · ${previews.length} forged trait combinations`, padding, 151)
+
+  for (let index = 0; index < previews.length; index += 1) {
+    const preview = previews[index]
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    const x = padding + column * (cellWidth + gap)
+    const y = gridTop + row * (cellHeight + gap)
+    context.fillStyle = '#ffffff'
+    context.fillRect(x, y, cellWidth, cellHeight)
+    context.fillStyle = background
+    context.fillRect(x + 2, y + 2, cellWidth - 4, cellHeight - 4)
+
+    const { image, cleanup } = await decodeCollageImage(preview.blob)
+    const imageScale = Math.min((cellWidth - 4) / image.width, (cellHeight - 4) / image.height)
+    const imageWidth = image.width * imageScale
+    const imageHeight = image.height * imageScale
+    context.drawImage(
+      image,
+      x + (cellWidth - imageWidth) / 2,
+      y + (cellHeight - imageHeight) / 2,
+      imageWidth,
+      imageHeight,
+    )
+    cleanup()
+
+    context.fillStyle = 'rgba(15, 20, 25, 0.82)'
+    context.fillRect(x + 12, y + cellHeight - 48, 66, 34)
+    context.fillStyle = '#ffffff'
+    context.font = '800 20px Arial, sans-serif'
+    context.fillText(`#${preview.edition}`, x + 22, y + cellHeight - 24)
+    context.strokeStyle = '#d4dce7'
+    context.lineWidth = 2
+    context.strokeRect(x, y, cellWidth, cellHeight)
+  }
+
+  context.fillStyle = '#607188'
+  context.font = '700 24px Arial, sans-serif'
+  context.fillText('Forged on trait-forge.art', padding, 966)
+  context.textAlign = 'right'
+  context.fillText('Rarities · Positions · Compatibility rules', canvas.width - padding, 966)
+  context.textAlign = 'left'
+  return canvasToBlob(canvas, 'image/png')
+}
+
+async function decodeCollageImage(blob) {
+  if (globalThis.createImageBitmap) {
+    const image = await createImageBitmap(blob)
+    return { image, cleanup: () => image.close?.() }
+  }
+  const url = URL.createObjectURL(blob)
+  const image = new Image()
+  await new Promise((resolve, reject) => {
+    image.onload = resolve
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Could not decode a preview for the collage.'))
+    }
+    image.src = url
+  })
+  return { image, cleanup: () => URL.revokeObjectURL(url) }
+}
+
+function downloadBlobUrl(url, fileName) {
+  const download = document.createElement('a')
+  download.href = url
+  download.download = fileName
+  document.body.appendChild(download)
+  download.click()
+  download.remove()
 }
 
 async function readResponseError(response, fallback) {
