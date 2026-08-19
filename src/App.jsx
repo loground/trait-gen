@@ -1560,12 +1560,27 @@ function App() {
 
       zip.file(METADATA_FILE_NAME, buildMetadataCsv(metadataCategories, metadataRows))
       zip.file('manifest.json', JSON.stringify(manifest, null, 2))
-      const zipBlob = await zip.generateAsync({
-        type: 'blob',
-        streamFiles: true,
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      })
+      setStatus('Packaging ZIP… 0%')
+      await waitForPaint()
+      let lastPackagingPercent = -1
+      let lastPackagingUpdate = 0
+      const zipBlob = await zip.generateAsync(
+        {
+          type: 'blob',
+          streamFiles: true,
+          // PNG, JPEG and WebP data is already compressed. Deflating it again is
+          // expensive and can make large exports appear frozen on mobile Safari.
+          compression: 'STORE',
+        },
+        ({ percent }) => {
+          const nextPercent = Math.min(100, Math.floor(percent))
+          const now = Date.now()
+          if (nextPercent === lastPackagingPercent || (nextPercent < 100 && now - lastPackagingUpdate < 200)) return
+          lastPackagingPercent = nextPercent
+          lastPackagingUpdate = now
+          setStatus(`Packaging ZIP… ${nextPercent}%`)
+        },
+      )
       const zipUrl = URL.createObjectURL(zipBlob)
       const zipName = `${slugify(project.name)}-nft-drop.zip`
       setLastZipUrl((current) => {
@@ -3430,7 +3445,18 @@ async function renderArtwork(source, traits, options = {}) {
   }
 
   const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
-  return canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+  try {
+    return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+  } finally {
+    // Resetting a canvas immediately releases its backing store in Safari. This
+    // keeps thousands of sequential renders from accumulating GPU memory.
+    if (exportCanvas !== canvas) {
+      exportCanvas.width = 0
+      exportCanvas.height = 0
+    }
+    canvas.width = 0
+    canvas.height = 0
+  }
 }
 
 function getPairPositionOverrides(traits, positionRules = []) {
