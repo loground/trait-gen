@@ -7,7 +7,6 @@ import {
   ArrowDown,
   ArrowUp,
   Ban,
-  Calculator,
   CheckCircle2,
   Eye,
   Film,
@@ -28,7 +27,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { findCombinationViolation, findInvalidCombination } from './ruleValidation.js'
-import { buildSmartRarityProfile } from './smartRarities.js'
+import { buildSmartRarityProfile, isAccessoryCategory } from './smartRarities.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -52,8 +51,7 @@ const DEFAULT_PROJECT = {
   name: 'Trait Collection',
   description: 'Generated with Trait Forge',
   imagePrefix: 'ipfs://CID/',
-  count: 2000,
-  startAt: 1,
+  count: 3333,
   seed: 'trait-forge',
   mode: 'random',
   outputFormat: 'webp',
@@ -94,6 +92,7 @@ function App() {
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
   const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
+  const [rarityPlanner, setRarityPlanner] = useState({ open: false, supply: '3333', zeroNoneCategoryIndexes: [], sourceKey: '' })
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
   const [activeRuleManagerTab, setActiveRuleManagerTab] = useState('trait-pairs')
   const [expandedCategoryIndices, setExpandedCategoryIndices] = useState([])
@@ -797,31 +796,41 @@ function App() {
     schedulePreview(nextSource)
   }
 
-  async function randomizeTraitRarities() {
+  function openRarityPlanner() {
     if (!source || busy) return
-    const targetCount = Math.max(1, Math.round(Number(project.count) || 2000))
+    const sourceKey = source.categories.map((category, index) => `${index}:${category.name}:${category.traits.length}`).join('|')
+    setRarityPlanner((current) => ({
+      open: true,
+      supply: String(Math.max(1, Math.round(Number(project.count) || 3333))),
+      zeroNoneCategoryIndexes: current.sourceKey === sourceKey
+        ? current.zeroNoneCategoryIndexes
+        : source.categories
+          .map((category, index) => (isAccessoryCategory(category.name) ? -1 : index))
+          .filter((index) => index >= 0),
+      sourceKey,
+    }))
+  }
+
+  function toggleRarityZeroNoneCategory(categoryIndex) {
+    setRarityPlanner((current) => ({
+      ...current,
+      zeroNoneCategoryIndexes: current.zeroNoneCategoryIndexes.includes(categoryIndex)
+        ? current.zeroNoneCategoryIndexes.filter((index) => index !== categoryIndex)
+        : [...current.zeroNoneCategoryIndexes, categoryIndex],
+    }))
+  }
+
+  async function randomizeTraitRarities(event) {
+    event?.preventDefault()
+    if (!source || busy) return
+    const targetCount = Math.max(1, Math.round(Number(rarityPlanner.supply) || 3333))
     const profile = buildSmartRarityProfile(source.categories, {
       targetCount,
       seed: `${project.seed}:${Date.now()}:${Math.random()}`,
+      zeroNoneCategoryIndexes: rarityPlanner.zeroNoneCategoryIndexes,
     })
-    let categories = profile.categories
-    let validCombinationInfo = countValidCombinations(getActiveCategories(categories), getSourceRules(source), COMBO_COUNT_DISPLAY_LIMIT)
-
-    // Small sources sometimes need an additional None choice to reach the target.
-    // Add it first to non-core groups where omission changes the artwork least.
-    if (!validCombinationInfo.capped && validCombinationInfo.count < targetCount) {
-      const candidates = categories
-        .map((category, index) => ({ category, index }))
-        .filter(({ category }) => category.enabled !== false && !getCategoryNoneWeight(category))
-        .sort((first, second) => first.category.traits.length - second.category.traits.length)
-      for (const candidate of candidates) {
-        categories = categories.map((category, index) =>
-          index === candidate.index ? addNoTraitChance(category, 12) : category,
-        )
-        validCombinationInfo = countValidCombinations(getActiveCategories(categories), getSourceRules(source), COMBO_COUNT_DISPLAY_LIMIT)
-        if (validCombinationInfo.capped || validCombinationInfo.count >= targetCount) break
-      }
-    }
+    const categories = profile.categories
+    const validCombinationInfo = countValidCombinations(getActiveCategories(categories), getSourceRules(source), COMBO_COUNT_DISPLAY_LIMIT)
 
     const nextSource = { ...source, categories }
     const capacity = validCombinationInfo.approximate
@@ -833,6 +842,7 @@ function App() {
     const duplicateWarning = duplicateNames.length ? ` Rename duplicate folder name${duplicateNames.length === 1 ? '' : 's'}: ${duplicateNames.join(', ')}.` : ''
     setSource(nextSource)
     setProject((current) => ({ ...current, count: targetCount, mode: 'random' }))
+    setRarityPlanner((current) => ({ ...current, open: false, supply: String(targetCount) }))
     setStatus(
       `Smart rarity plan for ${targetCount.toLocaleString()} editions: ${profile.summary.optionalCategoryCount} optional folders, ${profile.summary.rareTraitCount} ultra-rare traits, about ${profile.summary.lowestExpectedCount} copies of the rarest trait, and ${capacity} valid combinations.${duplicateWarning}`,
     )
@@ -1424,7 +1434,7 @@ function App() {
         previews.push({
           url,
           blob,
-          edition: Number(project.startAt) + index,
+          edition: index + 1,
           traits: combos[index]
             .filter((trait) => !trait.isNone)
             .map((trait) => `${trait.category}: ${getTraitMetadataName(trait)}`),
@@ -1505,7 +1515,7 @@ function App() {
       }
       const invalidCombination = findInvalidCombination(combos, rules)
       if (invalidCombination) {
-        throw new Error(`Rule validation stopped generation at edition ${Number(project.startAt) + invalidCombination.index}: ${invalidCombination.reason}`)
+        throw new Error(`Rule validation stopped generation at edition ${invalidCombination.index + 1}: ${invalidCombination.reason}`)
       }
 
       const generatedAt = new Date().toISOString()
@@ -1530,7 +1540,7 @@ function App() {
       )
 
       for (let index = 0; index < combos.length; index += 1) {
-        const edition = Number(project.startAt) + index
+        const edition = index + 1
         const violation = findCombinationViolation(combos[index], rules)
         if (violation) {
           throw new Error(`Rule validation stopped generation at edition ${edition}: ${violation}`)
@@ -1655,11 +1665,6 @@ function App() {
       { once: true },
     )
     input.click()
-  }
-
-  function useMaxEditions() {
-    if (!maxEditions || maxEditionsCapped) return
-    setProject((current) => ({ ...current, count: maxEditions }))
   }
 
   const traitOptionsByCategory = source?.categories?.map((category) =>
@@ -1949,29 +1954,17 @@ function App() {
             <input value={project.imagePrefix} onChange={(event) => updateProject('imagePrefix', event.target.value)} />
           </label>
 
-          <div className="field-grid">
-            <label>
-              Editions
-              <div className="input-with-action">
-                <input type="number" min="1" max={maxEditionsCapped ? undefined : maxEditions || undefined} value={project.count} onChange={(event) => updateProject('count', event.target.value)} />
-                <button type="button" disabled={!maxEditions || maxEditionsCapped || busy} onClick={useMaxEditions} aria-label="Use maximum editions">
-                  <Calculator size={16} />
-                  Max
-                </button>
-              </div>
-              <span className="field-hint">
-                {maxEditionsInfo.approximate
-                  ? `${formatComboCount(maxEditionsInfo)} — live counting paused to keep editing fast.`
-                  : maxEditions
-                    ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} maximum`
-                    : 'Load traits to calculate the maximum.'}
-              </span>
-            </label>
-            <label>
-              Start at
-              <input type="number" min="0" value={project.startAt} onChange={(event) => updateProject('startAt', event.target.value)} />
-            </label>
-          </div>
+          <label>
+            Editions
+            <input type="number" min="1" value={project.count} onChange={(event) => updateProject('count', event.target.value)} />
+            <span className="field-hint">
+              {maxEditionsInfo.approximate
+                ? `${formatComboCount(maxEditionsInfo)} — live counting paused to keep editing fast.`
+                : maxEditions
+                  ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} possible combinations`
+                  : 'Load traits to calculate possible combinations.'}
+            </span>
+          </label>
 
           <label>
             Random seed
@@ -2180,7 +2173,7 @@ function App() {
                   <ImagePlus size={16} />
                   Add traits
                 </button>
-                <button className="modal-rarity-action" type="button" disabled={busy} onClick={randomizeTraitRarities}>
+                <button className="modal-rarity-action" type="button" disabled={busy} onClick={openRarityPlanner}>
                   <Shuffle size={16} />
                   Randomize rarities
                 </button>
@@ -2238,7 +2231,7 @@ function App() {
                           min="0"
                           max="100"
                           step="0.1"
-                          value={traitEditorCategory?.noneWeight ?? 0}
+                          value={getCategoryNoneWeight(traitEditorCategory)}
                           disabled={busy || traitEditorCategory?.enabled === false}
                           onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
                         />
@@ -2394,6 +2387,67 @@ function App() {
                 )}
               </aside>
             </div>
+          </section>
+        </div>
+      )}
+
+      {rarityPlanner.open && source?.categories?.length && (
+        <div className="modal-backdrop rarity-planner-backdrop" role="presentation">
+          <section className="rarity-planner-modal" role="dialog" aria-modal="true" aria-labelledby="rarity-planner-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Smart rarity setup</p>
+                <h2 id="rarity-planner-title">Randomize rarities</h2>
+              </div>
+              <button type="button" aria-label="Close rarity setup" disabled={busy} onClick={() => setRarityPlanner((current) => ({ ...current, open: false }))}>
+                <X size={18} />
+              </button>
+            </header>
+            <form className="rarity-planner-form" onSubmit={randomizeTraitRarities}>
+              <label className="rarity-supply-field">
+                Collection supply
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  required
+                  value={rarityPlanner.supply}
+                  disabled={busy}
+                  onChange={(event) => setRarityPlanner((current) => ({ ...current, supply: event.target.value }))}
+                />
+                <small>Rarity percentages and expected copy counts will be tuned for this supply.</small>
+              </label>
+
+              <fieldset className="rarity-group-picker">
+                <legend>Folders with 0% “No trait” chance</legend>
+                <p>Checked folders always appear. Unchecked folders are optional and receive a recommended “No trait” chance.</p>
+                <div className="rarity-group-options">
+                  {source.categories.map((category, categoryIndex) => (
+                    <label className="rarity-group-option" key={`${category.name}-${categoryIndex}`}>
+                      <input
+                        type="checkbox"
+                        checked={rarityPlanner.zeroNoneCategoryIndexes.includes(categoryIndex)}
+                        disabled={busy || category.enabled === false || !category.traits.length}
+                        onChange={() => toggleRarityZeroNoneCategory(categoryIndex)}
+                      />
+                      <span>
+                        <strong>{category.name}</strong>
+                        <small>{category.traits.length} traits{category.enabled === false ? ' · excluded' : ''}</small>
+                      </span>
+                      <b>{rarityPlanner.zeroNoneCategoryIndexes.includes(categoryIndex) ? 'Always' : 'Optional'}</b>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              <footer className="rarity-planner-actions">
+                <button type="button" disabled={busy} onClick={() => setRarityPlanner((current) => ({ ...current, open: false }))}>Cancel</button>
+                <button className="primary-action" type="submit" disabled={busy}>
+                  <Shuffle size={16} />
+                  Apply random rarities
+                </button>
+              </footer>
+            </form>
           </section>
         </div>
       )}
@@ -3169,8 +3223,11 @@ function restoreProjectBackup(source, backup) {
   const invalidRule = findInvalidRuleReference(restoredSource)
   if (invalidRule) throw new Error(invalidRule)
 
+  const restoredProject = { ...DEFAULT_PROJECT, ...backup.project }
+  delete restoredProject.startAt
+
   return {
-    project: { ...DEFAULT_PROJECT, ...backup.project },
+    project: restoredProject,
     source: restoredSource,
     traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
     skippedTraitCount:
@@ -3689,21 +3746,6 @@ function getTraitWeight(trait) {
 function getTraitOffset(trait, axis) {
   const value = Number(axis === 'y' ? trait?.offsetY : trait?.offsetX)
   return Number.isFinite(value) ? Math.round(value) : 0
-}
-
-function addNoTraitChance(category, noTraitChance) {
-  const currentTotal = category.traits.reduce((total, trait) => total + getTraitWeight(trait), 0)
-  const traitBudget = 100 - noTraitChance
-  const traits = category.traits.map((trait, index) => {
-    const weight = currentTotal > 0 ? (getTraitWeight(trait) / currentTotal) * traitBudget : traitBudget / category.traits.length
-    const roundedWeight = Math.round(weight * 10) / 10
-    if (index !== category.traits.length - 1) return { ...trait, weight: roundedWeight }
-    const previousTotal = category.traits
-      .slice(0, -1)
-      .reduce((total, previousTrait) => total + Math.round(((getTraitWeight(previousTrait) / currentTotal) * traitBudget) * 10) / 10, 0)
-    return { ...trait, weight: Math.max(0.1, Math.round((traitBudget - previousTotal) * 10) / 10) }
-  })
-  return { ...category, noneWeight: noTraitChance, traits }
 }
 
 function findDuplicateCategoryNames(categories) {
