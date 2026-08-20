@@ -1,5 +1,8 @@
-const CORE_CATEGORY = /^(bg|background|backdrop|base|scene|sky|floor|body|skin|character|person|face|eyes|clothes|clothing|outfit|shirt|jacket)\b/i
-const HAIR_CATEGORY = /^(hair|hairstyle)\b/i
+const ACCESSORY_CATEGORY = /^(accessory|accessories|accesory|accesories)\b/i
+
+export function isAccessoryCategory(categoryName) {
+  return ACCESSORY_CATEGORY.test(String(categoryName || '').trim())
+}
 
 /**
  * Build a useful rarity profile instead of assigning unrelated random numbers.
@@ -7,18 +10,24 @@ const HAIR_CATEGORY = /^(hair|hairstyle)\b/i
  * real percentage chances (including "No trait").
  */
 export function buildSmartRarityProfile(categories, options = {}) {
-  const targetCount = Math.max(1, Math.round(Number(options.targetCount) || 2000))
+  const targetCount = Math.max(1, Math.round(Number(options.targetCount) || 3333))
   const seed = String(options.seed || 'trait-forge')
+  const zeroNoneCategoryIndexes = Array.isArray(options.zeroNoneCategoryIndexes)
+    ? new Set(options.zeroNoneCategoryIndexes.map(Number))
+    : null
 
   const profiledCategories = categories.map((category, categoryIndex) => {
     if (category.enabled === false || !category.traits.length) return category
 
-    const noTraitChance = getRecommendedNoTraitChance(category.name)
+    const noTraitChance = zeroNoneCategoryIndexes
+      ? zeroNoneCategoryIndexes.has(categoryIndex) ? 0 : getRecommendedOptionalNoTraitChance(category.traits.length)
+      : getRecommendedNoTraitChance(category.name, category.traits.length)
     const traitBudget = 100 - noTraitChance
     const weights = distributeTraitChances(
       category.traits.length,
       traitBudget,
       `${seed}:${categoryIndex}:${category.name}`,
+      targetCount,
     )
 
     return {
@@ -50,33 +59,48 @@ export function buildSmartRarityProfile(categories, options = {}) {
   }
 }
 
-export function getRecommendedNoTraitChance(categoryName) {
-  const name = String(categoryName || '').trim()
-  if (CORE_CATEGORY.test(name)) return 0
-  if (HAIR_CATEGORY.test(name)) return 6
-  if (/^(pet|pets|companion|companions)\b/i.test(name)) return 72
-  if (/^(smoke|effect|effects|aura)\b/i.test(name)) return 62
-  if (/^(chain|chains|necklace|jewelry|jewellery)\b/i.test(name)) return 58
-  if (/^(bandana|mask|masks)\b/i.test(name)) return 55
-  if (/^(on the head|hat|hats|headwear|head accessory)\b/i.test(name)) return 48
-  if (/^(accessory|accessories|weapon|weapons|glasses|eyewear)\b/i.test(name)) return 45
-  return 18
+export function getRecommendedNoTraitChance(categoryName, traitCount = 0) {
+  if (!isAccessoryCategory(categoryName)) return 0
+
+  return getRecommendedOptionalNoTraitChance(traitCount)
 }
 
-function distributeTraitChances(traitCount, budget, seed) {
+function getRecommendedOptionalNoTraitChance(traitCount) {
+  // Keep accessories optional without letting blank accessories dominate the set.
+  // A small folder needs a little more empty space because each included trait is
+  // otherwise extremely common.
+  if (traitCount <= 5) return 40
+  if (traitCount <= 10) return 35
+  if (traitCount <= 20) return 25
+  if (traitCount <= 40) return 18
+  return 15
+}
+
+function distributeTraitChances(traitCount, budget, seed, targetCount) {
   if (!traitCount) return []
 
-  const spread = traitCount >= 20 ? 7 : traitCount >= 12 ? 5 : traitCount >= 7 ? 3.5 : traitCount >= 4 ? 2.5 : 1.6
+  // Reserve about 10% of each folder as true rares, then keep the remaining
+  // traits on a moderate curve so common traits do not dominate combinations.
+  const spread = traitCount >= 30 ? 3.2 : traitCount >= 18 ? 2.8 : traitCount >= 10 ? 2.3 : 1.8
   const random = mulberry32(hashString(seed))
+  const rareTraitCount = traitCount >= 5 ? Math.max(1, Math.round(traitCount * 0.1)) : 0
+  const commonTraitCount = traitCount - rareTraitCount
   const rankedScores = Array.from({ length: traitCount }, (_, index) => {
-    const position = traitCount === 1 ? 1 : index / (traitCount - 1)
+    if (index < rareTraitCount) return 0
+    const commonIndex = index - rareTraitCount
+    const position = commonTraitCount <= 1 ? 1 : commonIndex / (commonTraitCount - 1)
     const rarityCurve = Math.pow(spread, position)
     return rarityCurve * (0.88 + random() * 0.24)
   })
   shuffle(rankedScores, random)
 
   const budgetUnits = Math.round(budget * 10)
-  const minimumUnits = 1
+  // Use tenths of a percent, with a floor of roughly 20 expected appearances.
+  // The floor is capped at half of an even share so it also works for very large
+  // folders or small collection sizes.
+  const expectedAppearanceFloor = (20 / targetCount) * 100
+  const evenShare = budget / traitCount
+  const minimumUnits = Math.max(1, Math.round(Math.min(expectedAppearanceFloor, evenShare / 2) * 10))
   const remainingUnits = Math.max(0, budgetUnits - minimumUnits * traitCount)
   const scoreTotal = rankedScores.reduce((total, score) => total + score, 0)
   const rawShares = rankedScores.map((score) => (remainingUnits * score) / scoreTotal)

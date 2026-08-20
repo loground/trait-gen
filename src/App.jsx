@@ -1,45 +1,53 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { readPsd } from 'ag-psd'
+import { decodeLayerPixels, getLayerCanvas, readPsd } from 'ag-psd'
 import JSZip from 'jszip'
+import { GIFEncoder, applyPalette, quantize } from 'gifenc'
 import {
   Archive,
   ArrowDown,
   ArrowUp,
   Ban,
-  Calculator,
   CheckCircle2,
+  CircleDollarSign,
+  Copy,
   Eye,
+  ExternalLink,
+  Film,
   FolderOpen,
+  HelpCircle,
   ImagePlus,
+  KeyRound,
   Layers3,
   Loader2,
-  LogOut,
   Play,
   Plus,
   RotateCcw,
+  Share2,
   Shuffle,
   SlidersHorizontal,
   Trash2,
   Upload,
-  Wallet,
   X,
 } from 'lucide-react'
 import './App.css'
 import { findCombinationViolation, findInvalidCombination } from './ruleValidation.js'
-import { buildSmartRarityProfile } from './smartRarities.js'
+import { buildSmartRarityProfile, isAccessoryCategory } from './smartRarities.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
+const RETAINED_PSD_BITMAP_LIMIT = 512 * 1024 * 1024
 const COMBO_COUNT_DISPLAY_LIMIT = 1000000
 const COMBO_COUNT_TIME_BUDGET_MS = 32
 const METADATA_FILE_NAME = 'metadata-file.csv'
+const ONE_OF_ONE_TRAIT_TYPE = '1/1'
+const RARITY_TRAIT_TYPE = 'Rarity'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
 const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
-const HOODCHAN_CONTRACT_ADDRESS = '0x774db2207d26570f5638028839c816702a40abc2'
-const HOODCHAN_COLLECTION_URL = 'https://opensea.io/collection/h00dchan'
-const ROBINHOOD_RPC_URL = 'https://rpc.mainnet.chain.robinhood.com'
-const TOKEN_GATE_ENABLED = false
+const X_SHARE_TEXT = 'I just forged the traits for my upcoming NFT collection on trait-forge.art, it was easy and cool'
+const GENERATION_CODE_URL = '/api/codes/redeem'
+const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
+const LOCAL_FREE_GENERATION = isLoopbackHostname(globalThis.location?.hostname)
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
   webp: { mime: 'image/webp', extension: 'webp', label: 'WebP' },
@@ -49,8 +57,7 @@ const DEFAULT_PROJECT = {
   name: 'Trait Collection',
   description: 'Generated with Trait Forge',
   imagePrefix: 'ipfs://CID/',
-  count: 2000,
-  startAt: 1,
+  count: 3333,
   seed: 'trait-forge',
   mode: 'random',
   outputFormat: 'webp',
@@ -61,8 +68,12 @@ const DEFAULT_PROJECT = {
 const emptyRuleDraft = { first: '', second: '' }
 const emptyRuleFolderDraft = { first: '', second: '' }
 const emptyPositionRuleDraft = { first: '', second: '', firstX: 0, firstY: 0, secondX: 0, secondY: 0 }
-const emptyConditionDraft = { category: '', requiredTrait: '' }
-const emptyFolderConflictDraft = { first: '', second: '' }
+const emptyConditionDraft = { categories: [], requiredTrait: '' }
+const emptyFolderConflictDraft = { first: [], second: [] }
+
+function isLoopbackHostname(hostname = '') {
+  return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
+}
 
 function App() {
   const [project, setProject] = useState(DEFAULT_PROJECT)
@@ -71,20 +82,36 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
   const [samplePreviews, setSamplePreviews] = useState([])
+  const [sampleCollage, setSampleCollage] = useState(null)
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
+  const [gifFrameCount, setGifFrameCount] = useState(7)
+  const [gifBusy, setGifBusy] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
-  const [walletGate, setWalletGate] = useState({ status: 'idle', address: '', balance: 0, message: '' })
+  const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [accessOpen, setAccessOpen] = useState(false)
+  const [accessBusy, setAccessBusy] = useState(false)
+  const [accessMessage, setAccessMessage] = useState('')
+  const [generationCode, setGenerationCode] = useState('')
+  const [paymentAsset, setPaymentAsset] = useState('USDC')
+  const [paymentQuote, setPaymentQuote] = useState(null)
+  const [paymentTransaction, setPaymentTransaction] = useState('')
+  const [account, setAccount] = useState({ status: 'loading', credits: 0 })
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
   const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
+  const [rarityPlanner, setRarityPlanner] = useState({ open: false, supply: '3333', zeroNoneCategoryIndexes: [], sourceKey: '' })
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
   const [activeRuleManagerTab, setActiveRuleManagerTab] = useState('trait-pairs')
+  const [expandedCategoryIndices, setExpandedCategoryIndices] = useState([])
+  const [traitDropCategoryIndex, setTraitDropCategoryIndex] = useState(null)
+  const [traitTitleEditing, setTraitTitleEditing] = useState(false)
   const [renderOrderRename, setRenderOrderRename] = useState(null)
   const [managerPreviewUrls, setManagerPreviewUrls] = useState({})
   const [managerPairPreviewUrl, setManagerPairPreviewUrl] = useState('')
-  const [positionPairPreviewUrl, setPositionPairPreviewUrl] = useState('')
+  const [activePositionTraitSide, setActivePositionTraitSide] = useState('first')
   const [traitEditorPreviewUrl, setTraitEditorPreviewUrl] = useState('')
   const [activeDropTarget, setActiveDropTarget] = useState('')
   const [ruleDraft, setRuleDraft] = useState(emptyRuleDraft)
@@ -96,20 +123,187 @@ function App() {
   const psdInputRef = useRef(null)
   const baseInputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const oneOfOneInputRef = useRef(null)
   const traitFilesInputRef = useRef(null)
   const traitUploadCategoryRef = useRef(null)
   const baseFileRef = useRef(null)
   const previewTimerRef = useRef(null)
   const previewRequestRef = useRef(0)
   const samplePreviewUrlsRef = useRef([])
+  const sampleCollageUrlRef = useRef('')
   const managerPreviewUrlsRef = useRef({})
   const managerPreviewSignaturesRef = useRef({})
   const managerPairPreviewUrlRef = useRef('')
-  const positionPairPreviewUrlRef = useRef('')
   const traitEditorPreviewUrlRef = useRef('')
   const traitPreviewDragRef = useRef(null)
-  const walletCheckRef = useRef(0)
+  const positionCanvasDragRef = useRef(null)
+  const draggedTraitRef = useRef(null)
+  const traitFolderDragOccurredRef = useRef(false)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
+
+  function acceptIntro() {
+    writeStoredValue(INTRO_ACCEPTED_KEY, 'yes')
+    setIntroOpen(false)
+  }
+
+  async function startGeneration() {
+    if (!source || busy) return
+    const generationError = getCollectionGenerationError(source)
+    if (generationError) {
+      setStatus(generationError)
+      return
+    }
+    if (LOCAL_FREE_GENERATION) {
+      await generateCollection()
+      return
+    }
+    if (account.credits > 0) {
+      await authorizeAndGenerate()
+      return
+    }
+    setAccessMessage('')
+    setAccessOpen(true)
+    await loadPaymentQuote()
+  }
+
+  function getCollectionGenerationError(activeSource) {
+    if (!activeSource?.categories?.length) return 'Load a PSD or folder set first.'
+    const activeCategories = getActiveCategories(activeSource.categories)
+    if (!activeCategories.length) return 'Include at least one folder with a trait chance above 0.'
+    const validCombinationInfo = countValidCombinations(activeCategories, getSourceRules(activeSource), COMBO_COUNT_DISPLAY_LIMIT)
+    if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
+      return 'No valid editions remain. Remove a trait rule or restore more traits.'
+    }
+    return ''
+  }
+
+  async function loadAccount() {
+    try {
+      const response = await fetch('/api/me', { credentials: 'include' })
+      if (!response.ok) throw new Error('Could not load generation credits.')
+      const result = await response.json()
+      const nextAccount = {
+        status: 'authenticated',
+        credits: Math.max(0, Number(result.credits) || 0),
+      }
+      setAccount(nextAccount)
+      return nextAccount
+    } catch {
+      setAccount({ status: 'unavailable', credits: 0 })
+      return null
+    }
+  }
+
+  async function authorizeAndGenerate() {
+    setAccessBusy(true)
+    setAccessMessage('Authorizing one generation credit…')
+    try {
+      const response = await fetch('/api/generations/authorize', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'Could not authorize generation.'))
+      const result = await response.json()
+      setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
+      setAccessOpen(false)
+      await generateCollection()
+    } catch (error) {
+      setAccessMessage(getErrorMessage(error, 'Could not authorize generation.'))
+      setAccessOpen(true)
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function redeemGenerationCode(event) {
+    event.preventDefault()
+    const code = generationCode.trim()
+    if (!code) {
+      setAccessMessage('Enter a generation code.')
+      return
+    }
+    setAccessBusy(true)
+    setAccessMessage('Checking your code…')
+    try {
+      const response = await fetch(GENERATION_CODE_URL, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'That code is invalid or unavailable.'))
+      const result = await response.json()
+      setGenerationCode('')
+      setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
+      await authorizeAndGenerate()
+    } catch (error) {
+      setAccessMessage(getErrorMessage(error, 'Could not redeem that code.'))
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function loadPaymentQuote(asset = paymentAsset) {
+    setAccessBusy(true)
+    setPaymentAsset(asset)
+    setPaymentQuote(null)
+    setAccessMessage(`Preparing a private ${asset} payment amount…`)
+    try {
+      const response = await fetch('/api/payments/quote', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ asset }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'Could not prepare the payment.'))
+      const quote = await response.json()
+      setPaymentQuote(quote)
+      setPaymentTransaction('')
+      setAccessMessage('')
+    } catch (error) {
+      setPaymentQuote(null)
+      setAccessMessage(getErrorMessage(error, 'Could not prepare the payment.'))
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function claimUsdcPayment(event) {
+    event.preventDefault()
+    if (!paymentQuote || !paymentTransaction.trim()) return
+    setAccessBusy(true)
+    setAccessMessage(`Checking the confirmed ${paymentQuote.asset} transfer on Base…`)
+    try {
+      const response = await fetch('/api/payments/claim', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ quoteId: paymentQuote.quoteId, transaction: paymentTransaction.trim() }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'Could not verify that payment.'))
+      const result = await response.json()
+      setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
+      setAccessMessage(result.alreadyClaimed ? 'This payment was already added to this browser.' : 'Payment verified. Three generation credits were added.')
+      setAccessOpen(false)
+      await authorizeAndGenerate()
+    } catch (error) {
+      setAccessMessage(getErrorMessage(error, 'Could not verify that payment.'))
+      setAccessOpen(true)
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function copyPaymentValue(label, value) {
+    try {
+      await navigator.clipboard.writeText(value)
+      setAccessMessage(`${label} copied.`)
+    } catch {
+      setAccessMessage(`Could not copy automatically. Select and copy the ${label.toLowerCase()} manually.`)
+    }
+  }
 
   const combinationStructureKey = getCombinationStructureKey(source)
   if (maxEditionsCacheRef.current.key !== combinationStructureKey) {
@@ -124,7 +318,11 @@ function App() {
   const maxEditionsInfo = maxEditionsCacheRef.current.value
   const maxEditions = maxEditionsInfo.count
   const maxEditionsCapped = maxEditionsInfo.capped
+  const oneOfOneCount = source?.oneOfOnes?.length || 0
   const samplePreviewCount = source ? Math.min(16, Math.max(1, maxEditions)) : 16
+  const isMobileShareDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
+  const pasteModifier = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'
 
   const sourceSummary = useMemo(() => {
     if (!source) return []
@@ -166,110 +364,18 @@ function App() {
     [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements],
   )
 
-  async function verifyWalletAccess(address) {
-    const requestId = walletCheckRef.current + 1
-    walletCheckRef.current = requestId
-    setWalletGate({ status: 'checking', address, balance: 0, message: 'Checking HOODCHAN ownership...' })
-    try {
-      const balance = await readHoodchanBalance(address)
-      if (requestId !== walletCheckRef.current) return false
-      if (balance > 0n) {
-        setWalletGate({ status: 'holder', address, balance: Number(balance), message: '' })
-        return true
-      }
-      setWalletGate({ status: 'denied', address, balance: 0, message: 'This wallet does not hold a HOODCHAN NFT.' })
-      return false
-    } catch (error) {
-      if (requestId !== walletCheckRef.current) return false
-      setWalletGate({ status: 'error', address, balance: 0, message: getErrorMessage(error, 'Could not verify NFT ownership.') })
-      return false
-    }
-  }
-
-  async function connectWallet() {
-    const provider = window.ethereum
-    if (!provider?.request) {
-      setWalletGate({ status: 'error', address: '', balance: 0, message: 'Open this page in an EVM wallet browser or install a browser wallet.' })
-      return
-    }
-    setWalletGate((current) => ({ ...current, status: 'connecting', message: 'Connecting wallet...' }))
-    try {
-      if (walletGate.address) {
-        try {
-          await provider.request({
-            method: 'wallet_requestPermissions',
-            params: [{ eth_accounts: {} }],
-          })
-        } catch (permissionError) {
-          if (permissionError?.code === 4001) throw permissionError
-          const unsupportedPermissionMethod = [-32601, -32004, 4200].includes(permissionError?.code)
-          if (!unsupportedPermissionMethod) throw permissionError
-        }
-      }
-      const accounts = await provider.request({ method: 'eth_requestAccounts' })
-      const address = accounts?.[0]
-      if (!address) throw new Error('No wallet account was selected.')
-      await verifyWalletAccess(address)
-    } catch (error) {
-      const message = error?.code === 4001 ? 'Wallet connection was cancelled.' : getErrorMessage(error, 'Could not connect the wallet.')
-      setWalletGate({ status: 'error', address: '', balance: 0, message })
-    }
-  }
-
-  async function disconnectWallet() {
-    walletCheckRef.current += 1
-    const provider = window.ethereum
-    try {
-      await provider?.request?.({
-        method: 'wallet_revokePermissions',
-        params: [{ eth_accounts: {} }],
-      })
-    } catch {
-      // Some injected wallets do not support permission revocation. The local
-      // session is still cleared so the token gate closes immediately.
-    }
-    setWalletGate({ status: 'idle', address: '', balance: 0, message: '' })
-  }
-
   async function ensureHolderAccess() {
-    if (!TOKEN_GATE_ENABLED) return true
-    if (walletGate.status !== 'holder' || !walletGate.address) return false
-    try {
-      const balance = await readHoodchanBalance(walletGate.address)
-      if (balance > 0n) return true
-      setWalletGate({ status: 'denied', address: walletGate.address, balance: 0, message: 'This wallet no longer holds a HOODCHAN NFT.' })
-    } catch (error) {
-      setWalletGate({ status: 'error', address: walletGate.address, balance: 0, message: getErrorMessage(error, 'Could not verify NFT ownership.') })
-    }
-    return false
+    return true
   }
 
   useEffect(() => {
-    if (!TOKEN_GATE_ENABLED) return undefined
-    const provider = window.ethereum
-    if (!provider?.request) return undefined
-    let active = true
-    const handleAccountsChanged = (accounts = []) => {
-      walletCheckRef.current += 1
-      const address = accounts[0]
-      if (!address) {
-        setWalletGate({ status: 'idle', address: '', balance: 0, message: '' })
-        return
-      }
-      verifyWalletAccess(address)
+    if (LOCAL_FREE_GENERATION) {
+      setAccount({ status: 'local', credits: 0 })
+      return
     }
-
-    provider.request({ method: 'eth_accounts' })
-      .then((accounts) => {
-        if (active && accounts?.[0]) verifyWalletAccess(accounts[0])
-      })
-      .catch(() => {})
-    provider.on?.('accountsChanged', handleAccountsChanged)
-    return () => {
-      active = false
-      provider.removeListener?.('accountsChanged', handleAccountsChanged)
-    }
+    loadAccount()
   }, [])
+
 
   useEffect(
     () => () => {
@@ -277,9 +383,9 @@ function App() {
       previewRequestRef.current += 1
       Object.values(managerPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url))
       if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
-      if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
       if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
       samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      if (sampleCollageUrlRef.current) URL.revokeObjectURL(sampleCollageUrlRef.current)
     },
     [],
   )
@@ -373,43 +479,8 @@ function App() {
   }, [traitManagerOpen, source, ruleDraft.first, ruleDraft.second])
 
   useEffect(() => {
-    let cancelled = false
-    let timer = null
-    const firstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
-    const secondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
-
-    if (!traitManagerOpen || !source || !firstTrait || !secondTrait) {
-      if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
-      positionPairPreviewUrlRef.current = ''
-      setPositionPairPreviewUrl('')
-      return undefined
-    }
-
-    timer = window.setTimeout(async () => {
-      try {
-        const positionedTraits = [
-          { ...firstTrait, offsetX: positionRuleDraft.firstX, offsetY: positionRuleDraft.firstY },
-          { ...secondTrait, offsetX: positionRuleDraft.secondX, offsetY: positionRuleDraft.secondY },
-        ]
-        const blob = await renderArtwork({ ...source, positionRules: [] }, positionedTraits, { renderMaxDimension: 360, includeBase: false })
-        const url = URL.createObjectURL(blob)
-        if (cancelled) {
-          URL.revokeObjectURL(url)
-          return
-        }
-        if (positionPairPreviewUrlRef.current) URL.revokeObjectURL(positionPairPreviewUrlRef.current)
-        positionPairPreviewUrlRef.current = url
-        setPositionPairPreviewUrl(url)
-      } catch {
-        if (!cancelled) setPositionPairPreviewUrl('')
-      }
-    }, 120)
-
-    return () => {
-      cancelled = true
-      if (timer) window.clearTimeout(timer)
-    }
-  }, [traitManagerOpen, source, positionRuleDraft])
+    setTraitTitleEditing(false)
+  }, [selectedCategoryIndex, selectedTraitIndex])
 
   useEffect(() => {
     let cancelled = false
@@ -467,17 +538,29 @@ function App() {
       }
       const buffer = await file.arrayBuffer()
       const psd = readPsd(buffer, {
+        useRawData: true,
         skipCompositeImageData: true,
         skipThumbnail: true,
+        skipLinkedFilesData: true,
       })
+      const estimatedBitmapBytes = estimatePsdBitmapBytes(psd)
+      const lowMemoryMode = estimatedBitmapBytes > RETAINED_PSD_BITMAP_LIMIT
+      if (!lowMemoryMode) decodePsdLayerPixels(psd.children)
       const parsed = parsePsd(psd, file.name)
+      parsed.lowMemoryMode = lowMemoryMode
+      parsed.estimatedBitmapBytes = estimatedBitmapBytes
       setSource(parsed)
+      setExpandedCategoryIndices([])
       setSelectedCategoryIndex(0)
       setRuleDraft(emptyRuleDraft)
       setRuleFolderDraft(emptyRuleFolderDraft)
       setPositionRuleDraft(emptyPositionRuleDraft)
       setPositionRuleFolderDraft(emptyRuleFolderDraft)
-      setStatus(`Loaded ${parsed.categories.length} categories from ${file.name}.`)
+      setStatus(
+        lowMemoryMode
+          ? `Loaded ${parsed.categories.length} categories from ${file.name} in low-memory mode (${formatBytes(estimatedBitmapBytes)} expanded). Layers decode as needed.`
+          : `Loaded ${parsed.categories.length} categories from ${file.name}.`,
+      )
       await renderPreview(parsed)
     } catch (error) {
       setStatus(getErrorMessage(error, 'Could not read that PSD. Try a layered RGB PSD with rasterized trait layers.'))
@@ -559,6 +642,7 @@ function App() {
     try {
       const parsed = await parseFolders(files, baseFileRef.current)
       setSource(parsed)
+      setExpandedCategoryIndices([])
       setSelectedCategoryIndex(0)
       setRuleDraft(emptyRuleDraft)
       setRuleFolderDraft(emptyRuleFolderDraft)
@@ -572,6 +656,86 @@ function App() {
       setBusy(false)
       event.target.value = ''
     }
+  }
+
+  async function importOneOfOneFiles(files) {
+    if (!source || busy) {
+      setStatus('Load the collection traits before adding 1/1 artworks.')
+      return
+    }
+    if (!(await ensureHolderAccess())) return
+    const imageFiles = Array.from(files || []).filter(isImageFile)
+    if (!imageFiles.length) {
+      setStatus('No PNG, JPG, or WebP 1/1 artworks were found.')
+      return
+    }
+
+    setBusy(true)
+    setStatus(`Reading ${imageFiles.length} unique 1/1 ${imageFiles.length === 1 ? 'artwork' : 'artworks'}...`)
+    try {
+      const existingIds = new Set((source.oneOfOnes || []).map((artwork) => artwork.id))
+      const additions = []
+      for (const file of imageFiles.sort((first, second) => first.name.localeCompare(second.name))) {
+        const originalName = cleanName(file.name) || 'Untitled 1/1'
+        let suffix = 1
+        let id = makeOneOfOneId(file.name)
+        while (existingIds.has(id)) {
+          suffix += 1
+          id = makeOneOfOneId(`${file.name}#${suffix}`)
+        }
+        existingIds.add(id)
+        additions.push({
+          id,
+          originalName,
+          name: originalName,
+          fileName: file.name,
+          image: await loadImageFromFile(file),
+        })
+      }
+      const nextSource = { ...source, oneOfOnes: [...(source.oneOfOnes || []), ...additions] }
+      setSource(nextSource)
+      setStatus(`Added ${additions.length} unique 1/1 ${additions.length === 1 ? 'artwork' : 'artworks'}. Each will be generated exactly once.`)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not add those 1/1 artworks.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleOneOfOneUpload(event) {
+    const files = Array.from(event.target.files || [])
+    event.target.value = ''
+    await importOneOfOneFiles(files)
+  }
+
+  async function handleOneOfOneDrop(event) {
+    event.preventDefault()
+    setActiveDropTarget('')
+    if (busy) return
+    try {
+      const files = await collectDroppedFiles(event.dataTransfer)
+      await importOneOfOneFiles(files)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not read that 1/1 folder.'))
+    }
+  }
+
+  function renameOneOfOne(index, value) {
+    if (!source || busy) return
+    setSource({
+      ...source,
+      oneOfOnes: (source.oneOfOnes || []).map((artwork, artworkIndex) => (
+        artworkIndex === index ? { ...artwork, name: value } : artwork
+      )),
+    })
+  }
+
+  function deleteOneOfOne(index) {
+    if (!source || busy) return
+    const artwork = source.oneOfOnes?.[index]
+    if (!artwork) return
+    setSource({ ...source, oneOfOnes: source.oneOfOnes.filter((_, artworkIndex) => artworkIndex !== index) })
+    setStatus(`${getOneOfOneName(artwork)} removed from the 1/1s.`)
   }
 
   function chooseTraitFiles(categoryIndex) {
@@ -656,6 +820,44 @@ function App() {
     })
   }
 
+  async function previewCurrentCombination() {
+    if (!source || busy) return
+    setBusy(true)
+    setStatus('Refreshing combination preview...')
+    try {
+      await renderPreview(source)
+      setStatus('Combination preview refreshed.')
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not refresh the combination preview.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function previewSingleTrait(categoryIndex, traitIndex) {
+    if (!source || busy || traitFolderDragOccurredRef.current) return
+    const trait = source.categories[categoryIndex]?.traits[traitIndex]
+    if (!trait) return
+    if (previewTimerRef.current) {
+      window.clearTimeout(previewTimerRef.current)
+      previewTimerRef.current = null
+    }
+    const requestId = previewRequestRef.current + 1
+    previewRequestRef.current = requestId
+    setStatus(`Previewing ${getTraitMetadataName(trait)}.`)
+    try {
+      const blob = await renderArtwork(source, [trait], { renderMaxDimension: PREVIEW_MAX_DIMENSION })
+      if (requestId !== previewRequestRef.current) return
+      const url = URL.createObjectURL(blob)
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current)
+        return url
+      })
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not preview that trait.'))
+    }
+  }
+
   function schedulePreview(activeSource) {
     if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
     previewTimerRef.current = window.setTimeout(() => {
@@ -681,6 +883,11 @@ function App() {
       if (current === nextIndex) return index
       return current
     })
+    setExpandedCategoryIndices((current) => current.map((categoryIndex) => {
+      if (categoryIndex === index) return nextIndex
+      if (categoryIndex === nextIndex) return index
+      return categoryIndex
+    }))
     setStatus(`Render order updated: ${categories.map((item) => item.name).join(' -> ')}.`)
     await renderPreview(nextSource)
   }
@@ -742,31 +949,41 @@ function App() {
     schedulePreview(nextSource)
   }
 
-  async function randomizeTraitRarities() {
+  function openRarityPlanner() {
     if (!source || busy) return
-    const targetCount = Math.max(1, Math.round(Number(project.count) || 2000))
+    const sourceKey = source.categories.map((category, index) => `${index}:${category.name}:${category.traits.length}`).join('|')
+    setRarityPlanner((current) => ({
+      open: true,
+      supply: String(Math.max(1, Math.round(Number(project.count) || 3333))),
+      zeroNoneCategoryIndexes: current.sourceKey === sourceKey
+        ? current.zeroNoneCategoryIndexes
+        : source.categories
+          .map((category, index) => (isAccessoryCategory(category.name) ? -1 : index))
+          .filter((index) => index >= 0),
+      sourceKey,
+    }))
+  }
+
+  function toggleRarityZeroNoneCategory(categoryIndex) {
+    setRarityPlanner((current) => ({
+      ...current,
+      zeroNoneCategoryIndexes: current.zeroNoneCategoryIndexes.includes(categoryIndex)
+        ? current.zeroNoneCategoryIndexes.filter((index) => index !== categoryIndex)
+        : [...current.zeroNoneCategoryIndexes, categoryIndex],
+    }))
+  }
+
+  async function randomizeTraitRarities(event) {
+    event?.preventDefault()
+    if (!source || busy) return
+    const targetCount = Math.max(1, Math.round(Number(rarityPlanner.supply) || 3333))
     const profile = buildSmartRarityProfile(source.categories, {
       targetCount,
       seed: `${project.seed}:${Date.now()}:${Math.random()}`,
+      zeroNoneCategoryIndexes: rarityPlanner.zeroNoneCategoryIndexes,
     })
-    let categories = profile.categories
-    let validCombinationInfo = countValidCombinations(getActiveCategories(categories), getSourceRules(source), COMBO_COUNT_DISPLAY_LIMIT)
-
-    // Small sources sometimes need an additional None choice to reach the target.
-    // Add it first to non-core groups where omission changes the artwork least.
-    if (!validCombinationInfo.capped && validCombinationInfo.count < targetCount) {
-      const candidates = categories
-        .map((category, index) => ({ category, index }))
-        .filter(({ category }) => category.enabled !== false && !getCategoryNoneWeight(category))
-        .sort((first, second) => first.category.traits.length - second.category.traits.length)
-      for (const candidate of candidates) {
-        categories = categories.map((category, index) =>
-          index === candidate.index ? addNoTraitChance(category, 12) : category,
-        )
-        validCombinationInfo = countValidCombinations(getActiveCategories(categories), getSourceRules(source), COMBO_COUNT_DISPLAY_LIMIT)
-        if (validCombinationInfo.capped || validCombinationInfo.count >= targetCount) break
-      }
-    }
+    const categories = profile.categories
+    const validCombinationInfo = countValidCombinations(getActiveCategories(categories), getSourceRules(source), COMBO_COUNT_DISPLAY_LIMIT)
 
     const nextSource = { ...source, categories }
     const capacity = validCombinationInfo.approximate
@@ -778,6 +995,7 @@ function App() {
     const duplicateWarning = duplicateNames.length ? ` Rename duplicate folder name${duplicateNames.length === 1 ? '' : 's'}: ${duplicateNames.join(', ')}.` : ''
     setSource(nextSource)
     setProject((current) => ({ ...current, count: targetCount, mode: 'random' }))
+    setRarityPlanner((current) => ({ ...current, open: false, supply: String(targetCount) }))
     setStatus(
       `Smart rarity plan for ${targetCount.toLocaleString()} editions: ${profile.summary.optionalCategoryCount} optional folders, ${profile.summary.rareTraitCount} ultra-rare traits, about ${profile.summary.lowestExpectedCount} copies of the rarest trait, and ${capacity} valid combinations.${duplicateWarning}`,
     )
@@ -956,6 +1174,42 @@ function App() {
     await renderPreview(nextSource)
   }
 
+  function startTraitFolderDrag(event, categoryIndex, traitIndex) {
+    if (busy) {
+      event.preventDefault()
+      return
+    }
+    traitFolderDragOccurredRef.current = true
+    draggedTraitRef.current = { categoryIndex, traitIndex }
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', `${categoryIndex}:${traitIndex}`)
+  }
+
+  function handleTraitFolderDragOver(event, categoryIndex) {
+    const draggedTrait = draggedTraitRef.current
+    if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    setTraitDropCategoryIndex(categoryIndex)
+  }
+
+  function finishTraitFolderDrag() {
+    draggedTraitRef.current = null
+    setTraitDropCategoryIndex(null)
+    window.setTimeout(() => {
+      traitFolderDragOccurredRef.current = false
+    }, 0)
+  }
+
+  async function handleTraitFolderDrop(event, categoryIndex) {
+    event.preventDefault()
+    const draggedTrait = draggedTraitRef.current
+    finishTraitFolderDrag()
+    if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
+    setExpandedCategoryIndices((current) => (current.includes(categoryIndex) ? current : [...current, categoryIndex]))
+    await moveTraitToCategory(draggedTrait.categoryIndex, draggedTrait.traitIndex, categoryIndex)
+  }
+
   async function addIncompatibility() {
     if (!source || busy || !ruleDraft.first || !ruleDraft.second || ruleDraft.first === ruleDraft.second) return
     const [first, second] = normalizeRule(ruleDraft.first, ruleDraft.second)
@@ -987,6 +1241,7 @@ function App() {
 
   function selectPositionRuleTrait(side, traitKey) {
     const trait = source ? findTraitByKey(source, traitKey) : null
+    if (traitKey) setActivePositionTraitSide(side)
     setPositionRuleDraft((current) => ({
       ...current,
       [side]: traitKey,
@@ -1007,6 +1262,41 @@ function App() {
     const limit = Math.max(source.width, source.height) * 2
     const offset = Math.round(Math.max(-limit, Math.min(limit, numericValue)))
     setPositionRuleDraft((current) => ({ ...current, [`${side}${axis.toUpperCase()}`]: offset }))
+  }
+
+  function handlePositionCanvasPointerDown(event) {
+    if (!source || busy || !positionRuleDraft[activePositionTraitSide]) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    positionCanvasDragRef.current = {
+      pointerId: event.pointerId,
+      side: activePositionTraitSide,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: Number(positionRuleDraft[`${activePositionTraitSide}X`]) || 0,
+      offsetY: Number(positionRuleDraft[`${activePositionTraitSide}Y`]) || 0,
+    }
+  }
+
+  function handlePositionCanvasPointerMove(event) {
+    const drag = positionCanvasDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId || !source) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const displayScale = Math.max(0.0001, Math.min(bounds.width / source.width, bounds.height / source.height))
+    const limit = Math.max(source.width, source.height) * 2
+    const offsetX = Math.round(Math.max(-limit, Math.min(limit, drag.offsetX + (event.clientX - drag.startX) / displayScale)))
+    const offsetY = Math.round(Math.max(-limit, Math.min(limit, drag.offsetY + (event.clientY - drag.startY) / displayScale)))
+    setPositionRuleDraft((current) => ({
+      ...current,
+      [`${drag.side}X`]: offsetX,
+      [`${drag.side}Y`]: offsetY,
+    }))
+  }
+
+  function handlePositionCanvasPointerUp(event) {
+    if (positionCanvasDragRef.current?.pointerId !== event.pointerId) return
+    positionCanvasDragRef.current = null
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
   }
 
   async function addPositionRule() {
@@ -1060,20 +1350,25 @@ function App() {
   }
 
   async function addCategoryRequirement() {
-    if (!source || busy || !conditionDraft.category || !conditionDraft.requiredTrait) return
+    if (!source || busy || !conditionDraft.categories.length || !conditionDraft.requiredTrait) return
     const existingRules = source.categoryRequirements || []
-    if (existingRules.some((rule) => rule.category === conditionDraft.category)) {
-      setStatus(`${conditionDraft.category} already has a folder rule.`)
+    const existingCategories = new Set(existingRules.map((rule) => rule.category))
+    const newRules = conditionDraft.categories
+      .filter((category) => !existingCategories.has(category))
+      .map((category) => ({ category, requiredTrait: conditionDraft.requiredTrait }))
+    if (!newRules.length) {
+      setStatus('Every selected folder already has a folder rule.')
       return
     }
 
     const nextSource = {
       ...source,
-      categoryRequirements: [...existingRules, { ...conditionDraft }],
+      categoryRequirements: [...existingRules, ...newRules],
     }
     setSource(nextSource)
     setConditionDraft(emptyConditionDraft)
-    setStatus('Folder rule added.')
+    const skippedCount = conditionDraft.categories.length - newRules.length
+    setStatus(`Added ${newRules.length} folder ${newRules.length === 1 ? 'rule' : 'rules'}.${skippedCount ? ` Skipped ${skippedCount} folder${skippedCount === 1 ? '' : 's'} with existing rules.` : ''}`)
     await renderPreview(nextSource)
   }
 
@@ -1089,23 +1384,51 @@ function App() {
   }
 
   async function addCategoryConflict() {
-    if (!source || busy || !folderConflictDraft.first || !folderConflictDraft.second || folderConflictDraft.first === folderConflictDraft.second) return
-    const [first, second] = normalizeRule(folderConflictDraft.first, folderConflictDraft.second)
-    const ruleKey = `${first}||${second}`
+    if (!source || busy || !folderConflictDraft.first.length || !folderConflictDraft.second.length) return
     const existingRules = source.categoryConflicts || []
-    if (existingRules.some((rule) => makeRuleKey(rule) === ruleKey)) {
-      setStatus('That folder conflict already exists.')
+    const ruleKeys = new Set(existingRules.map(makeRuleKey))
+    const newRules = []
+    for (const firstCategory of folderConflictDraft.first) {
+      for (const secondCategory of folderConflictDraft.second) {
+        if (firstCategory === secondCategory) continue
+        const [first, second] = normalizeRule(firstCategory, secondCategory)
+        const ruleKey = `${first}||${second}`
+        if (ruleKeys.has(ruleKey)) continue
+        ruleKeys.add(ruleKey)
+        newRules.push({ first, second })
+      }
+    }
+    if (!newRules.length) {
+      setStatus('No new folder-conflict combinations were selected.')
       return
     }
 
     const nextSource = {
       ...source,
-      categoryConflicts: [...existingRules, { first, second }],
+      categoryConflicts: [...existingRules, ...newRules],
     }
     setSource(nextSource)
     setFolderConflictDraft(emptyFolderConflictDraft)
-    setStatus('Folder conflict added.')
+    setStatus(`Added ${newRules.length} folder ${newRules.length === 1 ? 'conflict' : 'conflicts'}.`)
     await renderPreview(nextSource)
+  }
+
+  function toggleConditionCategory(category) {
+    setConditionDraft((current) => ({
+      ...current,
+      categories: current.categories.includes(category)
+        ? current.categories.filter((item) => item !== category)
+        : [...current.categories, category],
+    }))
+  }
+
+  function toggleFolderConflictCategory(side, category) {
+    setFolderConflictDraft((current) => ({
+      ...current,
+      [side]: current[side].includes(category)
+        ? current[side].filter((item) => item !== category)
+        : [...current[side], category],
+    }))
   }
 
   async function removeCategoryConflict(ruleIndex) {
@@ -1122,12 +1445,139 @@ function App() {
   function clearSamplePreviews() {
     samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     samplePreviewUrlsRef.current = []
+    if (sampleCollageUrlRef.current) URL.revokeObjectURL(sampleCollageUrlRef.current)
+    sampleCollageUrlRef.current = ''
     setSamplePreviews([])
+    setSampleCollage(null)
   }
 
   function closeSamplePreview() {
     setSamplePreviewOpen(false)
     clearSamplePreviews()
+  }
+
+  async function shareSampleCollage() {
+    if (!sampleCollage) return
+    const fileName = `${slugify(project.name)}-sample-collage.png`
+    const file = new File([sampleCollage.blob], fileName, { type: 'image/png' })
+
+    if (isMobileShareDevice && navigator.share && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({
+          title: 'Trait Forge preview',
+          text: X_SHARE_TEXT,
+          files: [file],
+        })
+        setStatus('Shared the collection sample collage.')
+      } catch (error) {
+        if (error?.name !== 'AbortError') setStatus('Could not open image sharing. Try downloading the collage instead.')
+      }
+      return
+    }
+
+    const intent = new URL('https://x.com/intent/tweet')
+    intent.searchParams.set('text', X_SHARE_TEXT)
+    let clipboardPromise = null
+    if (navigator.clipboard?.write && globalThis.ClipboardItem) {
+      try {
+        clipboardPromise = navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': sampleCollage.blob }),
+        ])
+      } catch {
+        clipboardPromise = null
+      }
+    }
+    const composer = window.open(intent.toString(), '_blank')
+    if (composer) composer.opener = null
+    else window.location.assign(intent.toString())
+    let copied = false
+    if (clipboardPromise) {
+      try {
+        await clipboardPromise
+        copied = true
+      } catch {
+        copied = false
+      }
+    }
+    if (copied) {
+      setStatus('Collage copied. Paste it into the X post composer with Ctrl+V or Command+V.')
+      return
+    }
+    downloadBlobUrl(sampleCollage.url, fileName)
+    setStatus('Collage downloaded. Attach it to the X post that just opened.')
+  }
+
+  async function generatePreviewGif() {
+    const frameCount = Math.min(gifFrameCount, samplePreviews.length, 7)
+    if (frameCount < 5 || gifBusy) {
+      setStatus('Render at least five collection samples before generating a GIF.')
+      return
+    }
+
+    setGifBusy(true)
+    setStatus(`Encoding a ${frameCount}-frame collection GIF…`)
+    try {
+      const size = 600
+      const canvas = document.createElement('canvas')
+      canvas.width = size
+      canvas.height = size
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (!context) throw new Error('Could not create the GIF canvas.')
+      const encoder = GIFEncoder()
+
+      for (let index = 0; index < frameCount; index += 1) {
+        const { image, cleanup } = await decodeCollageImage(samplePreviews[index].blob)
+        context.fillStyle = previewBackground
+        context.fillRect(0, 0, size, size)
+        const scale = Math.min(size / image.width, size / image.height)
+        const width = image.width * scale
+        const height = image.height * scale
+        context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height)
+        cleanup()
+
+        const rgba = context.getImageData(0, 0, size, size).data
+        const palette = quantize(rgba, 128)
+        const indexed = applyPalette(rgba, palette)
+        encoder.writeFrame(indexed, size, size, {
+          palette,
+          delay: 420,
+          repeat: 0,
+        })
+        setStatus(`Encoded GIF frame ${index + 1} of ${frameCount}…`)
+        await waitForPaint()
+      }
+
+      context.fillStyle = '#0f1419'
+      context.fillRect(0, 0, size, size)
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      context.fillStyle = '#8fa4bd'
+      context.font = '800 30px Arial, sans-serif'
+      context.fillText('COLLECTION GENERATED ON', size / 2, size / 2 - 48)
+      context.fillStyle = '#ffffff'
+      context.font = '900 58px Arial, sans-serif'
+      context.fillText('trait-forge.art', size / 2, size / 2 + 18)
+      context.fillStyle = '#fff2a8'
+      context.fillRect(size / 2 - 118, size / 2 + 66, 236, 7)
+      const endCardRgba = context.getImageData(0, 0, size, size).data
+      const endCardPalette = quantize(endCardRgba, 128)
+      encoder.writeFrame(applyPalette(endCardRgba, endCardPalette), size, size, {
+        palette: endCardPalette,
+        delay: 850,
+        repeat: 0,
+      })
+
+      encoder.finish()
+      const gifBlob = new Blob([encoder.bytes()], { type: 'image/gif' })
+      const gifUrl = URL.createObjectURL(gifBlob)
+      downloadBlobUrl(gifUrl, `${slugify(project.name)}-preview.gif`)
+      window.setTimeout(() => URL.revokeObjectURL(gifUrl), 30_000)
+      setStatus(`Downloaded a ${frameCount}-image collection GIF with a Trait Forge end card.`)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not generate the collection GIF.'))
+    } finally {
+      setGifBusy(false)
+    }
   }
 
   async function generateSamplePreview() {
@@ -1169,7 +1619,8 @@ function App() {
         createdUrls.push(url)
         previews.push({
           url,
-          edition: Number(project.startAt) + index,
+          blob,
+          edition: index + 1,
           traits: combos[index]
             .filter((trait) => !trait.isNone)
             .map((trait) => `${trait.category}: ${getTraitMetadataName(trait)}`),
@@ -1181,9 +1632,18 @@ function App() {
       }
       samplePreviewUrlsRef.current = createdUrls
       setSamplePreviews(previews)
+      setGifFrameCount(Math.min(7, previews.length))
+      setStatus('Building an 8-item sharing collage…')
+      const collageBlob = await buildSampleCollage(previews.slice(0, 8), project.name, previewBackground)
+      const collageUrl = URL.createObjectURL(collageBlob)
+      sampleCollageUrlRef.current = collageUrl
+      setSampleCollage({ blob: collageBlob, url: collageUrl, count: Math.min(8, previews.length) })
       setStatus(`Preview ready. These ${previews.length} samples use the current seed, rarities, and trait rules.`)
     } catch (error) {
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
+      samplePreviewUrlsRef.current = []
+      setSamplePreviews([])
+      setSampleCollage(null)
       setSamplePreviewOpen(false)
       setStatus(getErrorMessage(error, 'Could not render sample artworks.'))
     } finally {
@@ -1228,7 +1688,11 @@ function App() {
     try {
       const zip = new JSZip()
       const images = zip.folder('images')
-      const metadataCategories = activeCategories.map((category) => category.name)
+      const oneOfOnes = source.oneOfOnes || []
+      const metadataCategories = [
+        ...activeCategories.map((category) => category.name),
+        ...(oneOfOnes.length ? [ONE_OF_ONE_TRAIT_TYPE, RARITY_TRAIT_TYPE] : []),
+      ]
       const metadataRows = []
       const manifest = []
       const combos =
@@ -1241,7 +1705,7 @@ function App() {
       }
       const invalidCombination = findInvalidCombination(combos, rules)
       if (invalidCombination) {
-        throw new Error(`Rule validation stopped generation at edition ${Number(project.startAt) + invalidCombination.index}: ${invalidCombination.reason}`)
+        throw new Error(`Rule validation stopped generation at edition ${invalidCombination.index + 1}: ${invalidCombination.reason}`)
       }
 
       const generatedAt = new Date().toISOString()
@@ -1258,6 +1722,9 @@ function App() {
             positionRules: (source.positionRules || []).length,
             categoryRequirements: rules.categoryRequirements.length,
             categoryConflicts: rules.categoryConflicts.length,
+            collectionEditions: combos.length,
+            oneOfOneEditions: oneOfOnes.length,
+            totalEditions: combos.length + oneOfOnes.length,
             validationPassed: true,
           },
           null,
@@ -1266,7 +1733,7 @@ function App() {
       )
 
       for (let index = 0; index < combos.length; index += 1) {
-        const edition = Number(project.startAt) + index
+        const edition = index + 1
         const violation = findCombinationViolation(combos[index], rules)
         if (violation) {
           throw new Error(`Rule validation stopped generation at edition ${edition}: ${violation}`)
@@ -1294,14 +1761,57 @@ function App() {
         }
       }
 
+      for (let index = 0; index < oneOfOnes.length; index += 1) {
+        const artwork = oneOfOnes[index]
+        const edition = combos.length + index + 1
+        const blob = await renderOneOfOneArtwork(artwork, {
+          mime: output.mime,
+          quality,
+          maxDimension,
+        })
+        const imageFileName = `${edition}.${output.extension}`
+        const oneOfOneName = getOneOfOneName(artwork)
+        const attributes = [
+          { trait_type: ONE_OF_ONE_TRAIT_TYPE, value: oneOfOneName },
+          { trait_type: RARITY_TRAIT_TYPE, value: ONE_OF_ONE_TRAIT_TYPE },
+        ]
+        images.file(imageFileName, blob)
+        metadataRows.push(buildOneOfOneMetadataCsvRow(edition, imageFileName, project, metadataCategories, oneOfOneName))
+        manifest.push({
+          edition,
+          tokenId: edition,
+          image: `images/${imageFileName}`,
+          metadata: METADATA_FILE_NAME,
+          oneOfOne: true,
+          attributes,
+        })
+        setStatus(`Added ${index + 1} of ${oneOfOnes.length} unique 1/1 artworks...`)
+        await waitForPaint()
+      }
+
       zip.file(METADATA_FILE_NAME, buildMetadataCsv(metadataCategories, metadataRows))
       zip.file('manifest.json', JSON.stringify(manifest, null, 2))
-      const zipBlob = await zip.generateAsync({
-        type: 'blob',
-        streamFiles: true,
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      })
+      setStatus('Packaging ZIP… 0%')
+      await waitForPaint()
+      let lastPackagingPercent = -1
+      let lastPackagingUpdate = 0
+      const zipBlob = await zip.generateAsync(
+        {
+          type: 'blob',
+          streamFiles: true,
+          // PNG, JPEG and WebP data is already compressed. Deflating it again is
+          // expensive and can make large exports appear frozen on mobile Safari.
+          compression: 'STORE',
+        },
+        ({ percent }) => {
+          const nextPercent = Math.min(100, Math.floor(percent))
+          const now = Date.now()
+          if (nextPercent === lastPackagingPercent || (nextPercent < 100 && now - lastPackagingUpdate < 200)) return
+          lastPackagingPercent = nextPercent
+          lastPackagingUpdate = now
+          setStatus(`Packaging ZIP… ${nextPercent}%`)
+        },
+      )
       const zipUrl = URL.createObjectURL(zipBlob)
       const zipName = `${slugify(project.name)}-nft-drop.zip`
       setLastZipUrl((current) => {
@@ -1309,7 +1819,9 @@ function App() {
         return zipUrl
       })
       setLastZipName(zipName)
-      setStatus(`Done. ${combos.length} ${output.label} images and ${METADATA_FILE_NAME} are ready.`)
+      const totalEditions = combos.length + oneOfOnes.length
+      const oneOfOneMessage = oneOfOnes.length ? `, including ${oneOfOnes.length} unique 1/1${oneOfOnes.length === 1 ? '' : 's'}` : ''
+      setStatus(`Done. ${totalEditions} ${output.label} images${oneOfOneMessage} and ${METADATA_FILE_NAME} are ready.`)
     } catch (error) {
       setStatus(getErrorMessage(error, 'Generation failed.'))
     } finally {
@@ -1378,11 +1890,6 @@ function App() {
     input.click()
   }
 
-  function useMaxEditions() {
-    if (!maxEditions || maxEditionsCapped) return
-    setProject((current) => ({ ...current, count: maxEditions }))
-  }
-
   const traitOptionsByCategory = source?.categories?.map((category) =>
     category.traits.map((trait) => ({
       key: makeTraitKey(trait),
@@ -1397,39 +1904,35 @@ function App() {
   const positionRules = source?.positionRules || []
   const categoryRequirements = source?.categoryRequirements || []
   const categoryConflicts = source?.categoryConflicts || []
+  const categoryRequirementNames = new Set(categoryRequirements.map((rule) => rule.category))
+  const pendingFolderRuleCount = conditionDraft.categories.filter((category) => !categoryRequirementNames.has(category)).length
+  const existingFolderConflictKeys = new Set(categoryConflicts.map(makeRuleKey))
+  const pendingFolderConflictKeys = new Set()
+  for (const first of folderConflictDraft.first) {
+    for (const second of folderConflictDraft.second) {
+      if (first === second) continue
+      const ruleKey = makeRuleKey({ first, second })
+      if (!existingFolderConflictKeys.has(ruleKey)) pendingFolderConflictKeys.add(ruleKey)
+    }
+  }
+  const pendingFolderConflictCount = pendingFolderConflictKeys.size
   const traitEditorCategory = selectedCategory || source?.categories?.[0] || null
   const traitEditorCategoryIndex = source?.categories?.length ? Math.min(selectedCategoryIndex, source.categories.length - 1) : 0
   const traitEditorTraitIndex = traitEditorCategory?.traits?.length ? Math.min(selectedTraitIndex, traitEditorCategory.traits.length - 1) : 0
   const traitEditorTrait = traitEditorCategory?.traits?.[traitEditorTraitIndex] || null
+  const traitEditorNoneChance = getNormalizedNoneChance(traitEditorCategory)
+  const traitEditorTraitChance = getNormalizedTraitChance(traitEditorCategory, traitEditorTrait)
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
+  const positionFirstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
+  const positionSecondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
 
-  if (TOKEN_GATE_ENABLED && walletGate.status !== 'holder') {
-    const checkingWallet = walletGate.status === 'connecting' || walletGate.status === 'checking'
-    const choosingAnotherWallet = Boolean(walletGate.address)
-    return (
-      <main className="wallet-gate-shell">
-        <section className="wallet-gate-card" aria-live="polite">
-          <div className="wallet-gate-icon"><Wallet size={30} /></div>
-          <p className="eyebrow">HOODCHAN holders only</p>
-          <h1>Connect to enter Trait Forge</h1>
-          <p className="wallet-gate-description">Hold at least one HOODCHAN NFT in the connected wallet to upload traits and generate a collection.</p>
-          {walletGate.address && <code className="wallet-address">{formatWalletAddress(walletGate.address)}</code>}
-          {walletGate.message && <p className={`wallet-gate-message ${walletGate.status}`}>{walletGate.message}</p>}
-          <button
-            className="wallet-connect-action"
-            type="button"
-            disabled={checkingWallet}
-            onClick={connectWallet}
-          >
-            {checkingWallet ? <Loader2 className="spin" size={18} /> : <Wallet size={18} />}
-            {checkingWallet ? 'Connecting wallet...' : choosingAnotherWallet ? 'Choose another wallet' : 'Connect wallet'}
-          </button>
-          <a className="wallet-buy-link" href={HOODCHAN_COLLECTION_URL} target="_blank" rel="noreferrer">
-            Buy HOODCHAN on OpenSea
-          </a>
-        </section>
-      </main>
-    )
+  function getPositionCanvasTransform(side, trait) {
+    if (!source || !trait) return 'none'
+    const offsetX = Number(positionRuleDraft[`${side}X`]) || 0
+    const offsetY = Number(positionRuleDraft[`${side}Y`]) || 0
+    const deltaX = offsetX - getTraitOffset(trait, 'x')
+    const deltaY = offsetY - getTraitOffset(trait, 'y')
+    return `translate(${(deltaX / source.width) * 100}%, ${(deltaY / source.height) * 100}%)`
   }
 
   return (
@@ -1440,23 +1943,14 @@ function App() {
           <h1>Trait Forge</h1>
         </div>
         <div className="topbar-actions">
+          <button className="help-action" type="button" onClick={() => setHelpOpen(true)}>
+            <HelpCircle size={17} />
+            Help
+          </button>
           <div className="status-pill">
             {busy ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
             <span>{status}</span>
           </div>
-          {TOKEN_GATE_ENABLED && (
-            <div className="wallet-session">
-              <Wallet size={16} />
-              <div>
-                <code>{formatWalletAddress(walletGate.address)}</code>
-                <span>{walletGate.balance} HOODCHAN</span>
-              </div>
-              <button type="button" onClick={disconnectWallet} aria-label="Disconnect wallet">
-                <LogOut size={16} />
-                Disconnect
-              </button>
-            </div>
-          )}
         </div>
       </section>
 
@@ -1501,6 +1995,45 @@ function App() {
               Trait folders
             </button>
           </div>
+          {source && <section className="one-of-ones-panel" aria-label="Unique one of one artworks">
+            <button
+              className={`one-of-ones-drop ${activeDropTarget === 'one-of-ones' ? 'drag-active' : ''}`}
+              type="button"
+              onClick={() => oneOfOneInputRef.current?.click()}
+              onDragEnter={(event) => handleDropOver(event, 'one-of-ones')}
+              onDragOver={(event) => handleDropOver(event, 'one-of-ones')}
+              onDragLeave={(event) => handleDropLeave(event, 'one-of-ones')}
+              onDrop={handleOneOfOneDrop}
+              disabled={busy || !source}
+            >
+              <ImagePlus size={19} />
+              <span>
+                <strong>1/1s folder</strong>
+                <small>Drop complete artworks here. They never mix with traits.</small>
+              </span>
+              <b>{source?.oneOfOnes?.length || 0}</b>
+            </button>
+            {!!source?.oneOfOnes?.length && (
+              <div className="one-of-ones-list">
+                {source.oneOfOnes.map((artwork, index) => (
+                  <div className="one-of-one-row" key={artwork.id}>
+                    <OneOfOneThumbnail artwork={artwork} />
+                    <label>
+                      <span>1/1 trait name</span>
+                      <input
+                        value={artwork.name}
+                        aria-label={`Name for 1/1 artwork ${index + 1}`}
+                        onChange={(event) => renameOneOfOne(index, event.target.value)}
+                      />
+                    </label>
+                    <button type="button" aria-label={`Remove ${getOneOfOneName(artwork)}`} onClick={() => deleteOneOfOne(index)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>}
           <button className="backup-action" type="button" onClick={chooseProjectBackup} disabled={busy || !source}>
             <Archive size={18} />
             Restore project backup
@@ -1510,6 +2043,7 @@ function App() {
           <input ref={psdInputRef} className="hidden" type="file" accept=".psd,image/vnd.adobe.photoshop" onChange={handlePsdUpload} />
           <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBaseUpload} />
           <input ref={folderInputRef} className="hidden" type="file" webkitdirectory="true" directory="" multiple onChange={handleFolderUpload} />
+          <input ref={oneOfOneInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" webkitdirectory="true" directory="" multiple onChange={handleOneOfOneUpload} />
           <input ref={traitFilesInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleTraitFilesUpload} />
 
           <div className="trait-list">
@@ -1517,6 +2051,10 @@ function App() {
               <span>Render order</span>
               <div className="render-order-header-actions">
                 <span>{formatComboCount(maxEditionsInfo)}</span>
+                <button type="button" onClick={previewCurrentCombination} disabled={busy || !source}>
+                  <Eye size={13} />
+                  Preview
+                </button>
                 <button type="button" onClick={addCategory} disabled={busy || !source}>
                   <Plus size={13} />
                   Add folder
@@ -1525,44 +2063,92 @@ function App() {
             </div>
             {sourceSummary.length ? (
               sourceSummary.map((item, index) => (
-                <div className={`trait-row ${item.enabled ? '' : 'disabled'} ${selectedCategoryIndex === index ? 'selected' : ''}`} key={`${item.name}-${index}`}>
-                  {renderOrderRename?.categoryIndex === index ? (
-                    <input
-                      className="trait-rename-input"
-                      value={renderOrderRename.value}
-                      autoFocus
-                      aria-label={`Rename ${item.name}`}
-                      disabled={busy}
-                      onChange={(event) => setRenderOrderRename((current) => ({ ...current, value: event.target.value }))}
-                      onBlur={finishRenderOrderRename}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') event.currentTarget.blur()
-                        if (event.key === 'Escape') setRenderOrderRename(null)
-                      }}
-                    />
-                  ) : (
-                    <button className="trait-select" type="button" aria-label={`Rename ${item.name}`} onClick={() => startRenderOrderRename(index)}>
-                      <span title="Click to rename">{item.name}</span>
-                      {!item.enabled && <small>Excluded</small>}
-                    </button>
-                  )}
-                  <div className="trait-actions">
-                    <strong>{item.enabled ? item.count : 0}/{item.total}</strong>
-                    <button type="button" aria-label={`Move ${item.name} earlier`} disabled={busy || index === 0} onClick={() => moveCategory(index, -1)}>
-                      <ArrowUp size={14} />
-                    </button>
-                    <button type="button" aria-label={`Move ${item.name} later`} disabled={busy || index === sourceSummary.length - 1} onClick={() => moveCategory(index, 1)}>
-                      <ArrowDown size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={item.enabled ? `Remove ${item.name}` : `Restore ${item.name}`}
-                      disabled={busy}
-                      onClick={() => toggleCategory(index, !item.enabled)}
-                    >
-                      {item.enabled ? <X size={14} /> : <RotateCcw size={14} />}
-                    </button>
+                <div
+                  className={`trait-folder-group ${traitDropCategoryIndex === index ? 'drop-active' : ''}`}
+                  key={`${item.name}-${index}`}
+                  onDragOver={(event) => handleTraitFolderDragOver(event, index)}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) setTraitDropCategoryIndex((current) => (current === index ? null : current))
+                  }}
+                  onDrop={(event) => handleTraitFolderDrop(event, index)}
+                >
+                  <div className={`trait-row ${item.enabled ? '' : 'disabled'} ${selectedCategoryIndex === index ? 'selected' : ''}`}>
+                    {renderOrderRename?.categoryIndex === index ? (
+                      <input
+                        className="trait-rename-input"
+                        value={renderOrderRename.value}
+                        autoFocus
+                        aria-label={`Rename ${item.name}`}
+                        disabled={busy}
+                        onChange={(event) => setRenderOrderRename((current) => ({ ...current, value: event.target.value }))}
+                        onBlur={finishRenderOrderRename}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur()
+                          if (event.key === 'Escape') setRenderOrderRename(null)
+                        }}
+                      />
+                    ) : (
+                      <button className="trait-select" type="button" aria-label={`Rename ${item.name}`} onClick={() => startRenderOrderRename(index)}>
+                        <span title="Click to rename">{item.name}</span>
+                        {!item.enabled && <small>Excluded</small>}
+                      </button>
+                    )}
+                    <div className="trait-actions">
+                      <strong>{item.enabled ? item.count : 0}/{item.total}</strong>
+                      <button
+                        className={expandedCategoryIndices.includes(index) ? 'active' : ''}
+                        type="button"
+                        aria-label={`${expandedCategoryIndices.includes(index) ? 'Hide' : 'Show'} traits in ${item.name}`}
+                        aria-expanded={expandedCategoryIndices.includes(index)}
+                        disabled={busy}
+                        onClick={() => setExpandedCategoryIndices((current) => (
+                          current.includes(index) ? current.filter((categoryIndex) => categoryIndex !== index) : [...current, index]
+                        ))}
+                      >
+                        <Eye size={14} />
+                      </button>
+                      <button type="button" aria-label={`Move ${item.name} earlier`} disabled={busy || index === 0} onClick={() => moveCategory(index, -1)}>
+                        <ArrowUp size={14} />
+                      </button>
+                      <button type="button" aria-label={`Move ${item.name} later`} disabled={busy || index === sourceSummary.length - 1} onClick={() => moveCategory(index, 1)}>
+                        <ArrowDown size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={item.enabled ? `Remove ${item.name}` : `Restore ${item.name}`}
+                        disabled={busy}
+                        onClick={() => toggleCategory(index, !item.enabled)}
+                      >
+                        {item.enabled ? <X size={14} /> : <RotateCcw size={14} />}
+                      </button>
+                    </div>
                   </div>
+                  {expandedCategoryIndices.includes(index) && (
+                    <div className="folder-trait-list" aria-label={`Traits in ${item.name}`}>
+                      {source.categories[index].traits.length ? source.categories[index].traits.map((trait, traitIndex) => (
+                        <div
+                          className="folder-trait-chip"
+                          draggable={!busy}
+                          onDragStart={(event) => startTraitFolderDrag(event, index, traitIndex)}
+                          onDragEnd={finishTraitFolderDrag}
+                          onClick={() => previewSingleTrait(index, traitIndex)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              previewSingleTrait(index, traitIndex)
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          title={`Drag ${getTraitMetadataName(trait)} to another folder`}
+                          key={`${getTraitId(trait)}-${traitIndex}`}
+                        >
+                          <span>{getTraitMetadataName(trait)}</span>
+                          <small>Drag to move</small>
+                        </div>
+                      )) : <p>This folder has no traits. Drag traits here from another folder.</p>}
+                    </div>
+                  )}
                 </div>
               ))
             ) : (
@@ -1645,52 +2231,16 @@ function App() {
             <textarea value={project.description} rows="3" onChange={(event) => updateProject('description', event.target.value)} />
           </label>
           <label>
-            Image URI prefix
-            <input value={project.imagePrefix} onChange={(event) => updateProject('imagePrefix', event.target.value)} />
+            Collection editions
+            <input type="number" min="1" value={project.count} onChange={(event) => updateProject('count', event.target.value)} />
+            <span className="field-hint">
+              {maxEditionsInfo.approximate
+                ? `${formatComboCount(maxEditionsInfo)} — live counting paused to keep editing fast.`
+                : maxEditions
+                  ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} possible combinations${oneOfOneCount ? `, plus ${oneOfOneCount} guaranteed 1/1${oneOfOneCount === 1 ? '' : 's'}.` : ''}`
+                  : 'Load traits to calculate possible combinations.'}
+            </span>
           </label>
-
-          <div className="field-grid">
-            <label>
-              Editions
-              <div className="input-with-action">
-                <input type="number" min="1" max={maxEditionsCapped ? undefined : maxEditions || undefined} value={project.count} onChange={(event) => updateProject('count', event.target.value)} />
-                <button type="button" disabled={!maxEditions || maxEditionsCapped || busy} onClick={useMaxEditions} aria-label="Use maximum editions">
-                  <Calculator size={16} />
-                  Max
-                </button>
-              </div>
-              <span className="field-hint">
-                {maxEditionsInfo.approximate
-                  ? `${formatComboCount(maxEditionsInfo)} — live counting paused to keep editing fast.`
-                  : maxEditions
-                    ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} maximum`
-                    : 'Load traits to calculate the maximum.'}
-              </span>
-            </label>
-            <label>
-              Start at
-              <input type="number" min="0" value={project.startAt} onChange={(event) => updateProject('startAt', event.target.value)} />
-            </label>
-          </div>
-
-          <label>
-            Random seed
-            <input value={project.seed} onChange={(event) => updateProject('seed', event.target.value)} />
-          </label>
-
-          <div className="segmented" aria-label="Generation mode">
-            <button className={project.mode === 'random' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'random')}>
-              <Shuffle size={16} />
-              Random sample
-            </button>
-            <button className={project.mode === 'all' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'all')}>
-              <Archive size={16} />
-              All in order
-            </button>
-          </div>
-          <span className="mode-hint">
-            {project.mode === 'random' ? 'Uses the seed to pick unique combinations.' : 'Walks through every possible combination until Editions is reached.'}
-          </span>
 
           <div className="segmented three-up" aria-label="Output image format">
             {Object.entries(OUTPUT_FORMATS).map(([key, format]) => (
@@ -1709,19 +2259,54 @@ function App() {
           )}
 
           <label>
-            Max image side
+            Image size
             <input type="number" min="0" max="12000" value={project.maxDimension} onChange={(event) => updateProject('maxDimension', event.target.value)} />
-            <span className="field-hint">Use 0 for original size.</span>
+            <span className="field-hint">
+              {Number(project.maxDimension) > 0
+                ? `${Math.floor(Number(project.maxDimension)).toLocaleString()} × ${Math.floor(Number(project.maxDimension)).toLocaleString()} px`
+                : 'Original image size'}
+            </span>
           </label>
+
+          <details className="advanced-settings">
+            <summary>Advanced</summary>
+            <div className="advanced-settings-content">
+              <label>
+                Image URI prefix
+                <input value={project.imagePrefix} onChange={(event) => updateProject('imagePrefix', event.target.value)} />
+              </label>
+              <label>
+                Random seed
+                <input value={project.seed} onChange={(event) => updateProject('seed', event.target.value)} />
+              </label>
+              <div className="segmented" aria-label="Generation mode">
+                <button className={project.mode === 'random' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'random')}>
+                  <Shuffle size={16} />
+                  Random sample
+                </button>
+                <button className={project.mode === 'all' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'all')}>
+                  <Archive size={16} />
+                  All in order
+                </button>
+              </div>
+              <span className="mode-hint">
+                {project.mode === 'random' ? 'Uses the seed to pick unique combinations.' : 'Walks through every possible combination until Editions is reached.'}
+              </span>
+            </div>
+          </details>
 
           <button className="sample-preview-action" type="button" onClick={generateSamplePreview} disabled={busy || !source}>
             {busy && samplePreviewOpen ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
             Preview {samplePreviewCount} {samplePreviewCount === 1 ? 'sample' : 'samples'}
           </button>
 
-          <button className="primary-action" type="button" onClick={generateCollection} disabled={busy || !source}>
+          <button className="primary-action" type="button" onClick={startGeneration} disabled={busy || !source}>
             {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            Generate ZIP
+            {LOCAL_FREE_GENERATION
+              ? 'Generate ZIP · Free local mode'
+              : account.credits > 0
+              ? `Generate ZIP · ${account.credits} credit${account.credits === 1 ? '' : 's'}`
+              : 'Generate ZIP'}
           </button>
 
           <button className="download-link" type="button" onClick={downloadProjectBackup} disabled={busy || !source}>
@@ -1738,6 +2323,231 @@ function App() {
         </aside>
       </section>
 
+      {introOpen && (
+        <div className="modal-backdrop intro-backdrop" role="presentation">
+          <section className="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+            <div className="intro-mark"><Layers3 size={30} /></div>
+            <p className="eyebrow">Welcome to Trait Forge</p>
+            <h2 id="intro-title">Build your upcoming NFT collection</h2>
+            <p>
+              This app was created to generate NFT collections. Mix traits, add rarities, create rules,
+              and export images with metadata for your upcoming collection.
+            </p>
+            <div className="intro-price-note">
+              {LOCAL_FREE_GENERATION
+                ? 'Local development mode is free and does not require a generation code.'
+                : 'ZIP generation uses one credit. Buy 3 credits for about $20 in USDC or ETH on Base, with no wallet connection or registration required. Manual generation codes are also supported.'}
+            </div>
+            <button className="primary-action" type="button" onClick={acceptIntro}>
+              <CheckCircle2 size={18} />
+              I understand and agree
+            </button>
+          </section>
+        </div>
+      )}
+
+      {helpOpen && (
+        <div className="modal-backdrop help-backdrop" role="presentation">
+          <section className="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Guide and calculations</p>
+                <h2 id="help-title">Trait Forge Help</h2>
+              </div>
+              <button type="button" aria-label="Close help" onClick={() => setHelpOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="help-content">
+              <section className="chance-formula-card">
+                <div>
+                  <HelpCircle size={21} />
+                  <span>
+                    <strong>How chances work</strong>
+                    <small>Higher numbers appear more often. Lower numbers appear less often.</small>
+                  </span>
+                </div>
+                <code>10 red tickets + 90 blue tickets = red appears about 10 times out of 100</code>
+                <p>
+                  Imagine putting tickets into a hat for every trait in a folder. A trait with a higher number gets more tickets, so it is picked more often. “No trait” is another ticket option that leaves the folder empty.
+                </p>
+                <p className="help-caveat">
+                  Example: a 10% chance in a 1,000-image collection should appear about 100 times. The final number may be a little different because every generated image must be unique and follow your rules.
+                </p>
+              </section>
+
+              <div className="help-faq" aria-label="Frequently asked questions">
+                <details open>
+                  <summary>What does “No trait chance” do?</summary>
+                  <p>
+                    It lets the generator leave this folder empty. At 0, a trait from the folder always appears. Raise the number to leave the folder empty more often. The “Estimated” line shows the chance Trait Forge calculates from all the numbers in that folder.
+                  </p>
+                </details>
+                <details>
+                  <summary>What does Smart Rarity do?</summary>
+                  <p>
+                    Smart Rarity gives you a balanced starting point automatically. It makes most traits fairly common, makes a small group rare, and avoids making one trait appear in almost every image.
+                  </p>
+                  <p>
+                    For optional folders, it also adds a sensible “No trait” chance. Folders marked “Always” stay at 0%, so one of their traits appears in every image. You can change any of these numbers afterward.
+                  </p>
+                </details>
+                <details>
+                  <summary>What is the random seed?</summary>
+                  <p>
+                    It is like a shuffle code. Using the same code and settings gives you the same shuffled collection again. Change it when you want a different shuffle.
+                  </p>
+                </details>
+                <details>
+                  <summary>What do trait and folder rules do?</summary>
+                  <p>
+                    Rules tell Trait Forge which things are allowed together. Trait rules block a pair of individual traits. Folder rules show a folder only when a chosen trait is present. Folder conflicts stop two complete folders from appearing together. These rules can make the final trait counts slightly different from the estimated chances.
+                  </p>
+                </details>
+                <details>
+                  <summary>How are 1/1 artworks handled?</summary>
+                  <p>
+                    A 1/1 is a finished special artwork. It is added once, never mixed with other traits, and marked as a unique 1/1 in the metadata.
+                  </p>
+                </details>
+                <details>
+                  <summary>What does Image size control?</summary>
+                  <p>
+                    It controls how large exported images can be. Trait Forge keeps the artwork’s shape and proportions. Enter 0 if you want to keep the original image size.
+                  </p>
+                </details>
+                <details>
+                  <summary>How does the crypto payment work?</summary>
+                  <p>
+                    Choose USDC or ETH. Trait Forge shows you a payment address and a special amount close to $20. Send that exact amount using the Base network, then paste the transaction link or number. Trait Forge checks the public transaction and adds three generation credits to this browser. You do not need to connect a wallet or create an account.
+                  </p>
+                  <p>
+                    For USDC, use official USDC on Base only. For ETH, send Base ETH. Keep the page open until the credits appear, because the payment request and credits belong to this browser.
+                  </p>
+                </details>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {accessOpen && (
+        <div className="modal-backdrop payment-backdrop" role="presentation">
+          <section className="payment-modal" role="dialog" aria-modal="true" aria-labelledby="access-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">No account or wallet connection</p>
+                <h2 id="access-title">Get 3 generation credits</h2>
+              </div>
+              <button type="button" aria-label="Close generation access" disabled={accessBusy} onClick={() => setAccessOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="payment-panel">
+              <form className="payment-option-content" onSubmit={claimUsdcPayment}>
+                <div className="payment-option-heading">
+                  <span className="payment-option-icon"><CircleDollarSign size={25} /></span>
+                  <div>
+                    <h3>Pay $20 on Base: USDC/ETH</h3>
+                    <p>Send from any wallet, then paste the transaction below. Base only.</p>
+                  </div>
+                </div>
+                <div className="payment-asset-picker" aria-label="Choose payment asset">
+                  {['USDC', 'ETH'].map((asset) => (
+                    <button
+                      className={paymentAsset === asset ? 'active' : ''}
+                      type="button"
+                      disabled={accessBusy}
+                      aria-pressed={paymentAsset === asset}
+                      key={asset}
+                      onClick={() => loadPaymentQuote(asset)}
+                    >
+                      {asset === 'USDC' ? 'USDC on Base' : 'ETH on Base'}
+                    </button>
+                  ))}
+                </div>
+                <div className="payment-network-note">
+                  <strong>Base network · {paymentAsset === 'USDC' ? 'official USDC only' : 'native ETH only'}</strong>
+                  <span>{paymentAsset === 'USDC' ? 'Do not send ETH, bridged USDC, or tokens from another network.' : 'Do not send ETH from Ethereum mainnet or another network.'} Keep this browser open until credits are added. Crypto payments cannot be reversed.</span>
+                </div>
+
+                {paymentQuote ? (
+                  <>
+                    <ol className="crypto-payment-steps">
+                      <li>Copy the exact USDC amount and payment address.</li>
+                      <li>Send it on the <strong>Base</strong> network from any wallet.</li>
+                      <li>Paste the transaction hash or explorer link and verify.</li>
+                    </ol>
+                    <div className="payment-copy-field">
+                      <span>Exact amount</span>
+                      <div>
+                        <code>{paymentQuote.amount} {paymentQuote.asset}</code>
+                        <button type="button" aria-label={`Copy exact ${paymentQuote.asset} amount`} onClick={() => copyPaymentValue('Amount', paymentQuote.amount)}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="payment-copy-field">
+                      <span>Payment address</span>
+                      <div>
+                        <code>{paymentQuote.recipientAddress}</code>
+                        <button type="button" aria-label="Copy payment address" onClick={() => copyPaymentValue('Payment address', paymentQuote.recipientAddress)}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="payment-quote-meta">
+                      <span>Quote expires {new Date(paymentQuote.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      <a href={`${paymentQuote.explorerUrl}/address/${paymentQuote.recipientAddress}`} target="_blank" rel="noreferrer">
+                        View address <ExternalLink size={12} />
+                      </a>
+                    </div>
+                    <label>
+                      Base transaction hash or link
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        placeholder="0x… or https://base.blockscout.com/tx/…"
+                        value={paymentTransaction}
+                        disabled={accessBusy}
+                        onChange={(event) => setPaymentTransaction(event.target.value)}
+                      />
+                    </label>
+                    <button className="primary-action" type="submit" disabled={accessBusy || !paymentTransaction.trim()}>
+                      {accessBusy ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+                      Verify payment and generate
+                    </button>
+                  </>
+                ) : (
+                  <button className="primary-action" type="button" disabled={accessBusy} onClick={() => loadPaymentQuote(paymentAsset)}>
+                    {accessBusy ? <Loader2 className="spin" size={18} /> : <CircleDollarSign size={18} />}
+                    Prepare payment
+                  </button>
+                )}
+              </form>
+
+              <details className="code-redemption" open>
+                <summary>I have a generation code</summary>
+                <form className="payment-option-content" onSubmit={redeemGenerationCode}>
+                  <label>
+                    Generation code
+                    <input type="text" autoComplete="off" placeholder="TF-…" value={generationCode} disabled={accessBusy} onChange={(event) => setGenerationCode(event.target.value)} />
+                  </label>
+                  <button type="submit" disabled={accessBusy || !generationCode.trim()}>
+                    <KeyRound size={16} />
+                    Apply code and generate
+                  </button>
+                </form>
+              </details>
+              {accessMessage && <p className="payment-message" aria-live="polite">{accessMessage}</p>}
+              <p className="payment-support-note">
+                In case of any problems, DM: <a href="https://x.com/nickvrnn" target="_blank" rel="noreferrer">@nickvrnn</a>
+              </p>
+            </div>
+          </section>
+        </div>
+      )}
+
       {samplePreviewOpen && (
         <div className="modal-backdrop" role="presentation">
           <section className="sample-preview-modal" role="dialog" aria-modal="true" aria-label="Collection sample preview">
@@ -1746,7 +2556,7 @@ function App() {
                 <p className="eyebrow">Before ZIP generation</p>
                 <h2>Collection samples</h2>
               </div>
-              <button type="button" aria-label="Close sample preview" disabled={busy} onClick={closeSamplePreview}>
+              <button type="button" aria-label="Close sample preview" disabled={busy || gifBusy} onClick={closeSamplePreview}>
                 <X size={18} />
               </button>
             </header>
@@ -1768,7 +2578,32 @@ function App() {
               </div>
             )}
             <footer className="sample-preview-footer">
-              Samples use the current seed, rarities, positions, and compatibility rules. Nothing is downloaded yet.
+              {isMobileShareDevice ? (
+                <span>Shares the collage image and composed message through your mobile share sheet.</span>
+              ) : (
+                <div className="sample-preview-share-instruction">
+                  <span>After the X composer opens, paste the collage:</span>
+                  <strong><kbd>{pasteModifier}</kbd><b>+</b><kbd>V</kbd></strong>
+                </div>
+              )}
+              <div className="sample-preview-footer-actions">
+                <label>
+                  GIF frames
+                  <select value={gifFrameCount} disabled={gifBusy || samplePreviews.length < 5} onChange={(event) => setGifFrameCount(Number(event.target.value))}>
+                    {[5, 6, 7].filter((count) => count <= samplePreviews.length).map((count) => (
+                      <option value={count} key={count}>{count}</option>
+                    ))}
+                  </select>
+                </label>
+                <button className="gif-preview-action" type="button" disabled={gifBusy || samplePreviews.length < 5} onClick={generatePreviewGif}>
+                  {gifBusy ? <Loader2 className="spin" size={16} /> : <Film size={16} />}
+                  {gifBusy ? 'Generating GIF…' : 'Generate GIF'}
+                </button>
+                <button type="button" disabled={!sampleCollage || busy} onClick={shareSampleCollage}>
+                  <Share2 size={16} />
+                  Share {sampleCollage?.count || 8}-item collage to X
+                </button>
+              </div>
             </footer>
           </section>
         </div>
@@ -1783,7 +2618,20 @@ function App() {
                 <h2>Trait editor</h2>
               </div>
               <div className="modal-header-actions">
-                <button className="modal-rarity-action" type="button" disabled={busy} onClick={randomizeTraitRarities}>
+                <button className="modal-faq-action" type="button" onClick={() => setHelpOpen(true)}>
+                  <HelpCircle size={16} />
+                  FAQ
+                </button>
+                <button
+                  className="modal-add-traits-action"
+                  type="button"
+                  disabled={busy || !traitEditorCategory}
+                  onClick={() => chooseTraitFiles(traitEditorCategoryIndex)}
+                >
+                  <ImagePlus size={16} />
+                  Add traits
+                </button>
+                <button className="modal-rarity-action" type="button" disabled={busy} onClick={openRarityPlanner}>
                   <Shuffle size={16} />
                   Randomize rarities
                 </button>
@@ -1827,36 +2675,42 @@ function App() {
 
               <section className="trait-editor-list" aria-label="Traits in selected folder">
                 <header className="trait-editor-list-header">
-                  <div>
+                  <div className="selected-folder-heading">
                     <p className="eyebrow">Selected folder</p>
-                    <h3>{traitEditorCategory?.name}</h3>
+                    <div className="selected-folder-title-row">
+                      <h3>{traitEditorCategory?.name}</h3>
+                      <span>{traitEditorCategory?.traits.length || 0} traits</span>
+                    </div>
                   </div>
                   <div className="selected-folder-controls">
-                    <button
-                      className="add-traits-action"
-                      type="button"
-                      disabled={busy || !traitEditorCategory}
-                      onClick={() => chooseTraitFiles(traitEditorCategoryIndex)}
-                    >
-                      <ImagePlus size={15} />
-                      Add traits
-                    </button>
-                    <span>{traitEditorCategory?.traits.length || 0} traits</span>
-                    <label className="folder-none-chance">
-                      No trait chance
+                    <div className="folder-none-chance">
+                      <div className="chance-label-row">
+                        <label htmlFor="folder-none-chance-input">No trait chance</label>
+                        <button
+                          className="feature-tooltip"
+                          type="button"
+                          aria-label="Explain no trait chance"
+                          data-tooltip="How often this folder should be left empty. Click for a simple example."
+                          onClick={() => setHelpOpen(true)}
+                        >
+                          <HelpCircle size={13} />
+                        </button>
+                      </div>
                       <div className="input-with-suffix">
                         <input
+                          id="folder-none-chance-input"
                           type="number"
                           min="0"
                           max="100"
                           step="0.1"
-                          value={traitEditorCategory?.noneWeight ?? 0}
+                          value={getCategoryNoneWeight(traitEditorCategory)}
                           disabled={busy || traitEditorCategory?.enabled === false}
                           onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
                         />
                         <span>%</span>
                       </div>
-                    </label>
+                      <small>Estimated: {formatChance(traitEditorNoneChance)} of images</small>
+                    </div>
                   </div>
                 </header>
                 <div className="trait-editor-list-scroll">
@@ -1868,7 +2722,7 @@ function App() {
                       onClick={() => setSelectedTraitIndex(traitIndex)}
                     >
                       <span>{getTraitMetadataName(trait)}</span>
-                      <small>Rarity {getTraitWeight(trait)}% · Position X {getTraitOffset(trait, 'x')} · Position Y {getTraitOffset(trait, 'y')}</small>
+                      <small>Estimated chance {formatChance(getNormalizedTraitChance(traitEditorCategory, trait))} · Position X {getTraitOffset(trait, 'x')} · Y {getTraitOffset(trait, 'y')}</small>
                     </button>
                   ))}
                 </div>
@@ -1879,7 +2733,24 @@ function App() {
                   <>
                     <header className="trait-inspector-header">
                       <p className="eyebrow">Selected trait</p>
-                      <h3>{getTraitMetadataName(traitEditorTrait)}</h3>
+                      {traitTitleEditing ? (
+                        <input
+                          className="trait-title-input"
+                          value={traitEditorTrait.name}
+                          autoFocus
+                          disabled={busy || traitEditorCategory.enabled === false}
+                          aria-label="Edit selected trait name"
+                          onChange={(event) => renameTrait(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
+                          onBlur={() => setTraitTitleEditing(false)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === 'Escape') event.currentTarget.blur()
+                          }}
+                        />
+                      ) : (
+                        <button className="trait-title-button" type="button" disabled={busy || traitEditorCategory.enabled === false} onClick={() => setTraitTitleEditing(true)}>
+                          {getTraitMetadataName(traitEditorTrait)}
+                        </button>
+                      )}
                     </header>
                     <div className="preview-background-setting trait-editor-background-setting">
                       <span>Preview background</span>
@@ -1929,10 +2800,22 @@ function App() {
                           onChange={(event) => renameTrait(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
                         />
                       </label>
-                      <label>
-                        Chance
+                      <div className="trait-chance-field">
+                        <div className="chance-label-row">
+                          <label htmlFor="selected-trait-chance-input">Chance setting</label>
+                          <button
+                            className="feature-tooltip"
+                            type="button"
+                            aria-label="Explain trait chance"
+                            data-tooltip="Higher numbers appear more often. Lower numbers appear less often. Click for a simple example."
+                            onClick={() => setHelpOpen(true)}
+                          >
+                            <HelpCircle size={13} />
+                          </button>
+                        </div>
                         <div className="input-with-suffix">
                           <input
+                            id="selected-trait-chance-input"
                             type="number"
                             min="0"
                             max="100"
@@ -1943,7 +2826,8 @@ function App() {
                           />
                           <span>%</span>
                         </div>
-                      </label>
+                        <small>Estimated chance: {formatChance(traitEditorTraitChance)}</small>
+                      </div>
                       <div className="trait-inspector-position">
                         <div className="position-title">
                           <span>Position</span>
@@ -1989,6 +2873,67 @@ function App() {
                 )}
               </aside>
             </div>
+          </section>
+        </div>
+      )}
+
+      {rarityPlanner.open && source?.categories?.length && (
+        <div className="modal-backdrop rarity-planner-backdrop" role="presentation">
+          <section className="rarity-planner-modal" role="dialog" aria-modal="true" aria-labelledby="rarity-planner-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Smart rarity setup</p>
+                <h2 id="rarity-planner-title">Randomize rarities</h2>
+              </div>
+              <button type="button" aria-label="Close rarity setup" disabled={busy} onClick={() => setRarityPlanner((current) => ({ ...current, open: false }))}>
+                <X size={18} />
+              </button>
+            </header>
+            <form className="rarity-planner-form" onSubmit={randomizeTraitRarities}>
+              <label className="rarity-supply-field">
+                Collection supply
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  required
+                  value={rarityPlanner.supply}
+                  disabled={busy}
+                  onChange={(event) => setRarityPlanner((current) => ({ ...current, supply: event.target.value }))}
+                />
+                <small>Rarity percentages and expected copy counts will be tuned for this supply.</small>
+              </label>
+
+              <fieldset className="rarity-group-picker">
+                <legend>Folders with 0% “No trait” chance</legend>
+                <p>Checked folders always appear. Unchecked folders are optional and receive a recommended “No trait” chance.</p>
+                <div className="rarity-group-options">
+                  {source.categories.map((category, categoryIndex) => (
+                    <label className="rarity-group-option" key={`${category.name}-${categoryIndex}`}>
+                      <input
+                        type="checkbox"
+                        checked={rarityPlanner.zeroNoneCategoryIndexes.includes(categoryIndex)}
+                        disabled={busy || category.enabled === false || !category.traits.length}
+                        onChange={() => toggleRarityZeroNoneCategory(categoryIndex)}
+                      />
+                      <span>
+                        <strong>{category.name}</strong>
+                        <small>{category.traits.length} traits{category.enabled === false ? ' · excluded' : ''}</small>
+                      </span>
+                      <b>{rarityPlanner.zeroNoneCategoryIndexes.includes(categoryIndex) ? 'Always' : 'Optional'}</b>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              <footer className="rarity-planner-actions">
+                <button type="button" disabled={busy} onClick={() => setRarityPlanner((current) => ({ ...current, open: false }))}>Cancel</button>
+                <button className="primary-action" type="submit" disabled={busy}>
+                  <Shuffle size={16} />
+                  Apply random rarities
+                </button>
+              </footer>
+            </form>
           </section>
         </div>
       )}
@@ -2237,17 +3182,61 @@ function App() {
                   />
                 </div>
                 {positionRuleDraft.first && positionRuleDraft.second && (
-                  <div className="pair-position-preview">
+                  <div className="pair-position-preview interactive-position-preview">
                     <div className="pair-position-preview-header">
-                      <span>Position rule preview</span>
-                      <small>These coordinates apply only to this pair</small>
+                      <span>Drag to position both traits</span>
+                      <small>Select a trait, then drag it in the canvas</small>
                     </div>
-                    <div className="pair-position-preview-frame">
-                      {positionPairPreviewUrl ? (
-                        <img src={positionPairPreviewUrl} alt="Pair-specific position preview" />
-                      ) : (
+                    <div className="position-preview-trait-tabs" role="group" aria-label="Trait to reposition">
+                      <button
+                        className={activePositionTraitSide === 'first' ? 'active' : ''}
+                        type="button"
+                        onClick={() => setActivePositionTraitSide('first')}
+                      >
+                        <span>First trait</span>
+                        <strong>{traitOptionMap.get(positionRuleDraft.first)?.split(' / ').at(-1)}</strong>
+                        <small>X {Number(positionRuleDraft.firstX) || 0} · Y {Number(positionRuleDraft.firstY) || 0}</small>
+                      </button>
+                      <button
+                        className={activePositionTraitSide === 'second' ? 'active' : ''}
+                        type="button"
+                        onClick={() => setActivePositionTraitSide('second')}
+                      >
+                        <span>Second trait</span>
+                        <strong>{traitOptionMap.get(positionRuleDraft.second)?.split(' / ').at(-1)}</strong>
+                        <small>X {Number(positionRuleDraft.secondX) || 0} · Y {Number(positionRuleDraft.secondY) || 0}</small>
+                      </button>
+                    </div>
+                    <div
+                      className="pair-position-preview-frame interactive"
+                      aria-label={`Drag ${activePositionTraitSide} trait to reposition it`}
+                      onPointerDown={handlePositionCanvasPointerDown}
+                      onPointerMove={handlePositionCanvasPointerMove}
+                      onPointerUp={handlePositionCanvasPointerUp}
+                      onPointerCancel={handlePositionCanvasPointerUp}
+                    >
+                      {managerPreviewUrls[positionRuleDraft.first] && (
+                        <img
+                          className={`position-preview-layer ${activePositionTraitSide === 'first' ? 'active' : ''}`}
+                          src={managerPreviewUrls[positionRuleDraft.first]}
+                          alt=""
+                          draggable="false"
+                          style={{ transform: getPositionCanvasTransform('first', positionFirstTrait) }}
+                        />
+                      )}
+                      {managerPreviewUrls[positionRuleDraft.second] && (
+                        <img
+                          className={`position-preview-layer ${activePositionTraitSide === 'second' ? 'active' : ''}`}
+                          src={managerPreviewUrls[positionRuleDraft.second]}
+                          alt=""
+                          draggable="false"
+                          style={{ transform: getPositionCanvasTransform('second', positionSecondTrait) }}
+                        />
+                      )}
+                      {!managerPreviewUrls[positionRuleDraft.first] && !managerPreviewUrls[positionRuleDraft.second] && (
                         <Loader2 className="spin" size={22} aria-label="Loading position rule preview" />
                       )}
+                      <span className="position-drag-hint">Dragging {activePositionTraitSide === 'first' ? 'first' : 'second'} trait</span>
                     </div>
                   </div>
                 )}
@@ -2284,14 +3273,27 @@ function App() {
                   </span>
                   <strong>{categoryRequirements.length}</strong>
                 </div>
-                <p>Only apply an entire folder when a specific trait is selected.</p>
-                <label>
-                  Folder
-                  <select value={conditionDraft.category} disabled={busy} onChange={(event) => setConditionDraft((current) => ({ ...current, category: event.target.value }))}>
-                    <option value="">Choose folder</option>
-                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
-                  </select>
-                </label>
+                <p>Tick every folder that should only apply when the selected trait appears.</p>
+                <fieldset className="multi-rule-picker">
+                  <legend>Folders</legend>
+                  <div className="multi-rule-options">
+                    {source.categories.map((category, index) => {
+                      const hasRule = categoryRequirementNames.has(category.name)
+                      return (
+                        <label className="multi-rule-option" key={`${category.name}-${index}`}>
+                          <input
+                            type="checkbox"
+                            checked={conditionDraft.categories.includes(category.name)}
+                            disabled={busy || hasRule}
+                            onChange={() => toggleConditionCategory(category.name)}
+                          />
+                          <span>{category.name}</span>
+                          {hasRule && <small>Rule exists</small>}
+                        </label>
+                      )
+                    })}
+                  </div>
+                </fieldset>
                 <div className="trait-picker-field">
                   <label>
                     Only apply when
@@ -2302,9 +3304,9 @@ function App() {
                   </label>
                   <ManagerTraitPreview traitKey={conditionDraft.requiredTrait} url={managerPreviewUrls[conditionDraft.requiredTrait]} label={traitOptionMap.get(conditionDraft.requiredTrait)} />
                 </div>
-                <button className="rule-add" type="button" disabled={busy || !conditionDraft.category || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
+                <button className="rule-add" type="button" disabled={busy || !pendingFolderRuleCount || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
                   <Ban size={16} />
-                  Add folder rule
+                  {pendingFolderRuleCount ? `Add ${pendingFolderRuleCount} folder ${pendingFolderRuleCount === 1 ? 'rule' : 'rules'}` : 'Add folder rules'}
                 </button>
                 {categoryRequirements.length ? (
                   <div className="rule-list">
@@ -2333,24 +3335,44 @@ function App() {
                   </span>
                   <strong>{categoryConflicts.length}</strong>
                 </div>
-                <p>Prevent two entire folders from rendering in the same image.</p>
-                <label>
-                  First folder
-                  <select value={folderConflictDraft.first} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, first: event.target.value }))}>
-                    <option value="">Choose folder</option>
-                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Cannot appear with
-                  <select value={folderConflictDraft.second} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, second: event.target.value }))}>
-                    <option value="">Choose folder</option>
-                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
-                  </select>
-                </label>
-                <button className="rule-add" type="button" disabled={busy || !folderConflictDraft.first || !folderConflictDraft.second || folderConflictDraft.first === folderConflictDraft.second} onClick={addCategoryConflict}>
+                <p>Tick folders on both sides to create every new conflict combination between them.</p>
+                <div className="folder-conflict-pickers">
+                  <fieldset className="multi-rule-picker">
+                    <legend>Folders</legend>
+                    <div className="multi-rule-options">
+                      {source.categories.map((category, index) => (
+                        <label className="multi-rule-option" key={`${category.name}-${index}`}>
+                          <input
+                            type="checkbox"
+                            checked={folderConflictDraft.first.includes(category.name)}
+                            disabled={busy}
+                            onChange={() => toggleFolderConflictCategory('first', category.name)}
+                          />
+                          <span>{category.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <fieldset className="multi-rule-picker">
+                    <legend>Cannot appear with</legend>
+                    <div className="multi-rule-options">
+                      {source.categories.map((category, index) => (
+                        <label className="multi-rule-option" key={`${category.name}-${index}`}>
+                          <input
+                            type="checkbox"
+                            checked={folderConflictDraft.second.includes(category.name)}
+                            disabled={busy}
+                            onChange={() => toggleFolderConflictCategory('second', category.name)}
+                          />
+                          <span>{category.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                </div>
+                <button className="rule-add" type="button" disabled={busy || !pendingFolderConflictCount} onClick={addCategoryConflict}>
                   <Ban size={16} />
-                  Add folder conflict
+                  {pendingFolderConflictCount ? `Add ${pendingFolderConflictCount} folder ${pendingFolderConflictCount === 1 ? 'conflict' : 'conflicts'}` : 'Add folder conflicts'}
                 </button>
                 {categoryConflicts.length ? (
                   <div className="rule-list">
@@ -2374,28 +3396,128 @@ function App() {
   )
 }
 
-async function readHoodchanBalance(address) {
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address || '')) throw new Error('The connected wallet address is invalid.')
-  const data = `0x70a08231${address.slice(2).toLowerCase().padStart(64, '0')}`
-  const response = await fetch(ROBINHOOD_RPC_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: HOODCHAN_CONTRACT_ADDRESS, data }, 'latest'],
-    }),
-  })
-  if (!response.ok) throw new Error('Robinhood Chain did not respond to the ownership check.')
-  const payload = await response.json()
-  if (payload.error) throw new Error(payload.error.message || 'The ownership check failed.')
-  if (!/^0x[a-fA-F0-9]+$/.test(payload.result || '')) throw new Error('The ownership check returned an invalid balance.')
-  return BigInt(payload.result)
+function readStoredValue(key) {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
 }
 
-function formatWalletAddress(address) {
-  return address ? `${address.slice(0, 6)}…${address.slice(-4)}` : ''
+function writeStoredValue(key, value) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Access still works for this tab when browser storage is unavailable.
+  }
+}
+
+async function buildSampleCollage(previews, projectName, background = '#ffffff') {
+  if (!previews.length) throw new Error('No preview images are available for the collage.')
+  const canvas = document.createElement('canvas')
+  canvas.width = 1600
+  canvas.height = 1000
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Could not create the collage canvas.')
+
+  const padding = 32
+  const gap = 18
+  const columns = 4
+  const rows = 2
+  const gridTop = 170
+  const gridBottom = 920
+  const cellWidth = (canvas.width - padding * 2 - gap * (columns - 1)) / columns
+  const cellHeight = (gridBottom - gridTop - gap * (rows - 1)) / rows
+
+  context.fillStyle = '#f3f6fa'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.fillStyle = '#59708d'
+  context.font = '700 28px Arial, sans-serif'
+  context.fillText('TRAIT FORGE', padding, 52)
+  context.fillStyle = '#111923'
+  context.font = '800 58px Arial, sans-serif'
+  context.fillText('COLLECTION SAMPLES', padding, 116)
+  context.fillStyle = '#607188'
+  context.font = '500 25px Arial, sans-serif'
+  context.fillText(`${projectName || 'Upcoming NFT Collection'} · ${previews.length} forged trait combinations`, padding, 151)
+
+  for (let index = 0; index < previews.length; index += 1) {
+    const preview = previews[index]
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    const x = padding + column * (cellWidth + gap)
+    const y = gridTop + row * (cellHeight + gap)
+    context.fillStyle = '#ffffff'
+    context.fillRect(x, y, cellWidth, cellHeight)
+    context.fillStyle = background
+    context.fillRect(x + 2, y + 2, cellWidth - 4, cellHeight - 4)
+
+    const { image, cleanup } = await decodeCollageImage(preview.blob)
+    const imageScale = Math.min((cellWidth - 4) / image.width, (cellHeight - 4) / image.height)
+    const imageWidth = image.width * imageScale
+    const imageHeight = image.height * imageScale
+    context.drawImage(
+      image,
+      x + (cellWidth - imageWidth) / 2,
+      y + (cellHeight - imageHeight) / 2,
+      imageWidth,
+      imageHeight,
+    )
+    cleanup()
+
+    context.fillStyle = 'rgba(15, 20, 25, 0.82)'
+    context.fillRect(x + 12, y + cellHeight - 48, 66, 34)
+    context.fillStyle = '#ffffff'
+    context.font = '800 20px Arial, sans-serif'
+    context.fillText(`#${preview.edition}`, x + 22, y + cellHeight - 24)
+    context.strokeStyle = '#d4dce7'
+    context.lineWidth = 2
+    context.strokeRect(x, y, cellWidth, cellHeight)
+  }
+
+  context.fillStyle = '#607188'
+  context.font = '700 24px Arial, sans-serif'
+  context.fillText('Forged on trait-forge.art', padding, 966)
+  context.textAlign = 'right'
+  context.fillText('Rarities · Positions · Compatibility rules', canvas.width - padding, 966)
+  context.textAlign = 'left'
+  return canvasToBlob(canvas, 'image/png')
+}
+
+async function decodeCollageImage(blob) {
+  if (globalThis.createImageBitmap) {
+    const image = await createImageBitmap(blob)
+    return { image, cleanup: () => image.close?.() }
+  }
+  const url = URL.createObjectURL(blob)
+  const image = new Image()
+  await new Promise((resolve, reject) => {
+    image.onload = resolve
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Could not decode a preview for the collage.'))
+    }
+    image.src = url
+  })
+  return { image, cleanup: () => URL.revokeObjectURL(url) }
+}
+
+function downloadBlobUrl(url, fileName) {
+  const download = document.createElement('a')
+  download.href = url
+  download.download = fileName
+  document.body.appendChild(download)
+  download.click()
+  download.remove()
+}
+
+async function readResponseError(response, fallback) {
+  try {
+    const payload = await response.json()
+    return payload?.message || payload?.error || fallback
+  } catch {
+    return fallback
+  }
 }
 
 function ManagerTraitPreview({ traitKey, url, label }) {
@@ -2414,6 +3536,24 @@ function ManagerTraitPreview({ traitKey, url, label }) {
       <span title={label}>{shortLabel}</span>
     </div>
   )
+}
+
+function OneOfOneThumbnail({ artwork }) {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const image = artwork?.image
+    if (!canvas || !image?.naturalWidth || !image.naturalHeight) return
+    const context = canvas.getContext('2d')
+    const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight)
+    const width = image.naturalWidth * scale
+    const height = image.naturalHeight * scale
+    context.clearRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height)
+  }, [artwork])
+
+  return <canvas ref={canvasRef} width="76" height="76" aria-hidden="true" />
 }
 
 function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange }) {
@@ -2522,6 +3662,12 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
       positionRules: (source.positionRules || []).map((rule) => ({ ...rule })),
       categoryRequirements: source.categoryRequirements || [],
       categoryConflicts: source.categoryConflicts || [],
+      oneOfOnes: (source.oneOfOnes || []).map((artwork) => ({
+        id: artwork.id,
+        originalName: artwork.originalName,
+        name: getOneOfOneName(artwork),
+        fileName: artwork.fileName,
+      })),
     },
   }
 }
@@ -2609,6 +3755,12 @@ function restoreProjectBackup(source, backup) {
   const restoredSource = {
     ...source,
     categories: restoredCategories,
+    oneOfOnes: (source.oneOfOnes || []).map((artwork) => {
+      const backupArtwork = (backup.source.oneOfOnes || []).find((candidate) => (
+        candidate.id === artwork.id || candidate.originalName === artwork.originalName || candidate.fileName === artwork.fileName
+      ))
+      return backupArtwork ? { ...artwork, name: backupArtwork.name } : artwork
+    }),
     incompatibilities,
     positionRules,
     categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
@@ -2620,8 +3772,11 @@ function restoreProjectBackup(source, backup) {
   const invalidRule = findInvalidRuleReference(restoredSource)
   if (invalidRule) throw new Error(invalidRule)
 
+  const restoredProject = { ...DEFAULT_PROJECT, ...backup.project }
+  delete restoredProject.startAt
+
   return {
-    project: { ...DEFAULT_PROJECT, ...backup.project },
+    project: restoredProject,
     source: restoredSource,
     traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
     skippedTraitCount:
@@ -2733,10 +3888,36 @@ function parsePsd(psd, fileName) {
     height: psd.height,
     baseLayers,
     categories,
+    oneOfOnes: [],
     incompatibilities: [],
     positionRules: [],
     categoryRequirements: [],
     categoryConflicts: [],
+  }
+}
+
+function estimatePsdBitmapBytes(psd) {
+  let total = 0
+  const visit = (layers = []) => {
+    for (const layer of layers) {
+      if (layer.children?.length) {
+        visit(layer.children)
+        continue
+      }
+      if (!layer.rawData) continue
+      const width = Math.max(0, Number(layer.right) - Number(layer.left))
+      const height = Math.max(0, Number(layer.bottom) - Number(layer.top))
+      total += width * height * 4
+    }
+  }
+  visit(psd.children)
+  return total
+}
+
+function decodePsdLayerPixels(layers = []) {
+  for (const layer of layers) {
+    if (layer.children?.length) decodePsdLayerPixels(layer.children)
+    else if (layer.rawData) decodeLayerPixels(layer)
   }
 }
 
@@ -2812,6 +3993,7 @@ async function parseFolders(files, baseFile) {
     height,
     baseImage,
     categories,
+    oneOfOnes: [],
     incompatibilities: [],
     positionRules: [],
     categoryRequirements: [],
@@ -2871,7 +4053,18 @@ async function renderArtwork(source, traits, options = {}) {
   }
 
   const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
-  return canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+  try {
+    return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+  } finally {
+    // Resetting a canvas immediately releases its backing store in Safari. This
+    // keeps thousands of sequential renders from accumulating GPU memory.
+    if (exportCanvas !== canvas) {
+      exportCanvas.width = 0
+      exportCanvas.height = 0
+    }
+    canvas.width = 0
+    canvas.height = 0
+  }
 }
 
 function getPairPositionOverrides(traits, positionRules = []) {
@@ -2887,11 +4080,17 @@ function getPairPositionOverrides(traits, positionRules = []) {
 
 function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
   if (!hasRenderableCanvas(layer)) return
+  const canvas = layer.canvas || (layer.rawData ? getLayerCanvas(layer) : null)
+  if (!canvas) return
   const opacity = typeof layer.opacity === 'number' ? layer.opacity : 1
   context.save()
   context.globalAlpha = opacity
-  context.drawImage(layer.canvas, (layer.left || 0) + offsetX, (layer.top || 0) + offsetY)
+  context.drawImage(canvas, (layer.left || 0) + offsetX, (layer.top || 0) + offsetY)
   context.restore()
+  if (!layer.canvas) {
+    canvas.width = 0
+    canvas.height = 0
+  }
 }
 
 function sortCategoriesForRender(categories) {
@@ -3095,24 +4294,32 @@ function getTraitWeight(trait) {
   return Number.isFinite(weight) ? Math.max(0, weight) : 0
 }
 
+function getCategoryTotalWeight(category) {
+  if (!category) return 0
+  return category.traits.reduce((total, trait) => total + getTraitWeight(trait), getCategoryNoneWeight(category))
+}
+
+function getNormalizedTraitChance(category, trait) {
+  if (!category || !trait) return 0
+  const totalWeight = getCategoryTotalWeight(category)
+  return totalWeight > 0 ? (getTraitWeight(trait) / totalWeight) * 100 : 0
+}
+
+function getNormalizedNoneChance(category) {
+  const totalWeight = getCategoryTotalWeight(category)
+  return totalWeight > 0 ? (getCategoryNoneWeight(category) / totalWeight) * 100 : 0
+}
+
+function formatChance(value) {
+  const chance = Number(value)
+  if (!Number.isFinite(chance) || chance <= 0) return '0%'
+  const precision = chance < 1 ? 2 : 1
+  return `${Number(chance.toFixed(precision))}%`
+}
+
 function getTraitOffset(trait, axis) {
   const value = Number(axis === 'y' ? trait?.offsetY : trait?.offsetX)
   return Number.isFinite(value) ? Math.round(value) : 0
-}
-
-function addNoTraitChance(category, noTraitChance) {
-  const currentTotal = category.traits.reduce((total, trait) => total + getTraitWeight(trait), 0)
-  const traitBudget = 100 - noTraitChance
-  const traits = category.traits.map((trait, index) => {
-    const weight = currentTotal > 0 ? (getTraitWeight(trait) / currentTotal) * traitBudget : traitBudget / category.traits.length
-    const roundedWeight = Math.round(weight * 10) / 10
-    if (index !== category.traits.length - 1) return { ...trait, weight: roundedWeight }
-    const previousTotal = category.traits
-      .slice(0, -1)
-      .reduce((total, previousTrait) => total + Math.round(((getTraitWeight(previousTrait) / currentTotal) * traitBudget) * 10) / 10, 0)
-    return { ...trait, weight: Math.max(0.1, Math.round((traitBudget - previousTotal) * 10) / 10) }
-  })
-  return { ...category, noneWeight: noTraitChance, traits }
 }
 
 function findDuplicateCategoryNames(categories) {
@@ -3207,6 +4414,14 @@ function buildMetadataCsvRow(tokenId, imageFileName, project, categories, combo)
   return [tokenId, `${project.name} #${tokenId}`, project.description, imageFileName, '', ...categories.map((category) => traitByCategory.get(category) || '')]
 }
 
+function buildOneOfOneMetadataCsvRow(tokenId, imageFileName, project, categories, artworkName) {
+  const values = new Map([
+    [ONE_OF_ONE_TRAIT_TYPE, artworkName],
+    [RARITY_TRAIT_TYPE, ONE_OF_ONE_TRAIT_TYPE],
+  ])
+  return [tokenId, `${project.name} #${tokenId} — ${artworkName}`, project.description, imageFileName, '', ...categories.map((category) => values.get(category) || '')]
+}
+
 function formatCsvCell(value) {
   const cell = String(value ?? '')
   if (!/[",\n\r]/.test(cell)) return cell
@@ -3281,6 +4496,64 @@ function loadImageFromFile(file) {
   })
 }
 
+function isImageFile(file) {
+  return IMAGE_TYPES.includes(file?.type) || /\.(png|jpe?g|webp)$/i.test(file?.name || '')
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const entries = Array.from(dataTransfer?.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter(Boolean)
+  if (!entries.length) return Array.from(dataTransfer?.files || [])
+  const nestedFiles = await Promise.all(entries.map(readDroppedEntry))
+  return nestedFiles.flat()
+}
+
+async function readDroppedEntry(entry) {
+  if (entry.isFile) {
+    return new Promise((resolve, reject) => entry.file((file) => resolve([file]), reject))
+  }
+  if (!entry.isDirectory) return []
+  const reader = entry.createReader()
+  const children = []
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) break
+    children.push(...batch)
+  }
+  return (await Promise.all(children.map(readDroppedEntry))).flat()
+}
+
+function makeOneOfOneId(name) {
+  return `one-of-one::${name}`
+}
+
+function getOneOfOneName(artwork) {
+  return cleanName(artwork?.name) || artwork?.originalName || 'Untitled 1/1'
+}
+
+async function renderOneOfOneArtwork(artwork, options = {}) {
+  const image = artwork?.image
+  if (!image?.naturalWidth || !image.naturalHeight) throw new Error(`Could not render ${getOneOfOneName(artwork)}.`)
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+  const context = canvas.getContext('2d')
+  context.drawImage(image, 0, 0)
+  const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
+  try {
+    return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+  } finally {
+    if (exportCanvas !== canvas) {
+      exportCanvas.width = 0
+      exportCanvas.height = 0
+    }
+    canvas.width = 0
+    canvas.height = 0
+  }
+}
+
 function resizeCanvasForExport(canvas, maxDimension = 0) {
   const limit = Number(maxDimension) || 0
   const longestSide = Math.max(canvas.width, canvas.height)
@@ -3307,7 +4580,8 @@ function canvasToBlob(canvas, mime = 'image/png', quality) {
 }
 
 function hasRenderableCanvas(layer) {
-  return Boolean(layer?.canvas && layer.canvas.width && layer.canvas.height)
+  if (layer?.canvas?.width && layer.canvas.height) return true
+  return Boolean(layer?.rawData && Number(layer.right) > Number(layer.left) && Number(layer.bottom) > Number(layer.top))
 }
 
 function cleanName(value = 'Untitled') {
