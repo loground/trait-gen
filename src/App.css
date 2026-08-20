@@ -53,6 +53,19 @@
   gap: 10px;
 }
 
+.topbar-actions .help-action {
+  min-height: 38px;
+  padding: 7px 12px;
+  color: #405873;
+  background: #fff;
+}
+
+.topbar-actions .help-action:hover {
+  color: #075a55;
+  border-color: #8fc9c0;
+  background: #eef8f6;
+}
+
 .wallet-session {
   min-height: 38px;
   display: flex;
@@ -292,6 +305,99 @@ button:disabled {
 
 .split-row button {
   width: 100%;
+}
+
+.one-of-ones-panel {
+  margin-top: 10px;
+  border: 1px solid #ddcda7;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fffdf6;
+}
+
+.one-of-ones-drop {
+  width: 100%;
+  min-height: 68px;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid transparent;
+  background: #fff8df;
+  text-align: left;
+}
+
+.one-of-ones-drop span {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.one-of-ones-drop small {
+  color: #75633e;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.one-of-ones-drop b {
+  min-width: 28px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #5d4611;
+  color: #fff;
+  text-align: center;
+  font-size: 12px;
+}
+
+.one-of-ones-drop.drag-active {
+  background: #f6e7b7;
+  box-shadow: inset 0 0 0 2px #a47513;
+}
+
+.one-of-ones-list {
+  display: grid;
+  gap: 1px;
+  border-top: 1px solid #ddcda7;
+  background: #eadfca;
+}
+
+.one-of-one-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  background: #fffdf8;
+}
+
+.one-of-one-row > canvas {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #ddcda7;
+  border-radius: 4px;
+}
+
+.one-of-one-row label {
+  min-width: 0;
+  gap: 3px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.one-of-one-row input {
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 12px;
+  text-transform: none;
+}
+
+.one-of-one-row > button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: #a43c32;
 }
 
 .backup-action {
@@ -560,6 +666,124 @@ button:disabled {
 
 .rarity-planner-backdrop {
   z-index: 20;
+}
+
+.help-backdrop {
+  z-index: 40;
+}
+
+.help-modal {
+  width: min(760px, 100%);
+  max-height: min(820px, calc(100svh - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #c6d0dd;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(18, 27, 39, 0.3);
+}
+
+.help-content {
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.chance-formula-card {
+  padding: 16px;
+  border: 1px solid #9dcfc7;
+  border-radius: 9px;
+  background: #eef8f6;
+}
+
+.chance-formula-card > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #075a55;
+}
+
+.chance-formula-card > div > span {
+  display: grid;
+  gap: 2px;
+}
+
+.chance-formula-card strong {
+  color: #173c3a;
+}
+
+.chance-formula-card small {
+  color: #54716f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chance-formula-card code {
+  display: block;
+  margin: 14px 0 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid #c7e3de;
+  border-radius: 6px;
+  color: #173c3a;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.chance-formula-card p {
+  margin: 0;
+  color: #405f5d;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.chance-formula-card .help-caveat {
+  margin-top: 8px;
+  color: #667875;
+  font-size: 11px;
+}
+
+.help-faq {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.help-faq details {
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.help-faq summary {
+  padding: 12px 40px 12px 13px;
+  color: #26384d;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.help-faq details[open] summary {
+  border-bottom: 1px solid #e2e7ee;
+  background: #f8fafc;
+}
+
+.help-faq p {
+  margin: 0;
+  padding: 12px 13px;
+  color: #52647a;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.help-faq p + p {
+  padding-top: 0;
 }
 
 .rarity-planner-modal {
@@ -1335,6 +1559,89 @@ button:disabled {
   text-align: center;
 }
 
+.folder-conflict-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.multi-rule-picker {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 10px;
+  border: 1px solid #c6d0dd;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.folder-conflict-pickers .multi-rule-picker {
+  margin-bottom: 0;
+}
+
+.multi-rule-picker legend {
+  padding: 0 5px;
+  color: #45576c;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.multi-rule-options {
+  max-height: 240px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  overflow-y: auto;
+}
+
+.multi-rule-option {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.multi-rule-option:has(input:checked) {
+  border-color: #75b7ad;
+  background: #e9f8f4;
+  color: #075a55;
+}
+
+.multi-rule-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.multi-rule-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0d6b67;
+}
+
+.multi-rule-option span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multi-rule-option small {
+  color: #7a8798;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .trait-picker-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 92px;
@@ -1794,10 +2101,10 @@ button:disabled {
 }
 
 .trait-editor-list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  align-items: end;
+  gap: 16px;
   padding: 16px 18px 14px;
   border-bottom: 1px solid #e3e8ef;
 }
@@ -1813,19 +2120,58 @@ button:disabled {
   font-size: 18px;
 }
 
-.selected-folder-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 7px 10px;
+.selected-folder-heading {
+  min-width: 0;
 }
 
-.selected-folder-controls > span {
-  color: #607188;
-  font-size: 12px;
-  font-weight: 800;
+.selected-folder-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.selected-folder-title-row h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.selected-folder-title-row > span {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #52647a;
+  background: #edf2f7;
+  font-size: 9px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.selected-folder-controls {
+  min-width: 0;
+}
+
+.modal-header .modal-faq-action {
+  width: auto;
+  min-width: 74px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0 12px;
+  color: #405873;
+  background: #fff;
+  border-color: #c6d0dd;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.modal-header .modal-faq-action:hover {
+  color: #075a55;
+  border-color: #8fc9c0;
+  background: #eef8f6;
 }
 
 .modal-header .modal-add-traits-action {
@@ -1851,8 +2197,7 @@ button:disabled {
 }
 
 .folder-none-chance {
-  min-width: 112px;
-  margin: 0;
+  min-width: 0;
   color: #45576c;
   font-size: 9px;
   font-weight: 850;
@@ -1866,10 +2211,94 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(13, 107, 103, 0.08);
 }
 
+.folder-none-chance > small,
+.trait-chance-field > small {
+  display: block;
+  margin-top: 5px;
+  color: #708096;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
+}
+
 .folder-none-chance input {
   height: 32px;
   padding: 6px 8px;
   font-size: 13px;
+}
+
+.trait-chance-field {
+  display: grid;
+  margin-bottom: 14px;
+  color: #45576c;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.chance-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  margin-bottom: 7px;
+}
+
+.chance-label-row label {
+  min-width: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.feature-tooltip {
+  position: relative;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 50%;
+  color: #607188;
+  background: transparent;
+}
+
+.feature-tooltip:hover,
+.feature-tooltip:focus-visible {
+  color: #075a55;
+  border-color: #9dcfc7;
+  background: #e9f8f4;
+}
+
+.feature-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 20;
+  right: -5px;
+  bottom: calc(100% + 8px);
+  width: 220px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: #fff;
+  background: #233143;
+  box-shadow: 0 8px 24px rgba(18, 27, 39, 0.2);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  text-align: left;
+  text-transform: none;
+  pointer-events: none;
+  opacity: 0;
+  translate: 0 3px;
+  transition: opacity 120ms ease, translate 120ms ease;
+}
+
+.feature-tooltip:hover::after,
+.feature-tooltip:focus-visible::after {
+  opacity: 1;
+  translate: 0 0;
 }
 
 .trait-editor-list-scroll {
@@ -2214,6 +2643,55 @@ button:focus-visible,
   font-weight: 700;
 }
 
+.advanced-settings {
+  margin: 2px 0 16px;
+  border: 1px solid #c6d0dd;
+  border-radius: 6px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.advanced-settings summary {
+  position: relative;
+  padding: 12px 38px 12px 13px;
+  color: #34465b;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+
+.advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-settings summary::after {
+  content: '+';
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  translate: 0 -50%;
+  color: #607188;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.advanced-settings[open] summary {
+  border-bottom: 1px solid #d8dee8;
+}
+
+.advanced-settings[open] summary::after {
+  content: '−';
+}
+
+.advanced-settings-content {
+  padding: 14px 13px 12px;
+}
+
+.advanced-settings-content .mode-hint {
+  margin-bottom: 0;
+}
+
 .rule-add {
   width: 100%;
   margin-bottom: 10px;
@@ -2362,7 +2840,7 @@ input[type='range'] {
 
 @media (max-width: 900px) {
   .trait-editor-workspace {
-    grid-template-columns: 1fr;
+    display: block;
     overflow-y: auto;
   }
 
@@ -2389,6 +2867,11 @@ input[type='range'] {
 }
 
 @media (max-width: 720px) {
+  .folder-conflict-pickers,
+  .multi-rule-options {
+    grid-template-columns: 1fr;
+  }
+
   .topbar {
     align-items: flex-start;
     flex-direction: column;

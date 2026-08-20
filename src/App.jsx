@@ -11,6 +11,7 @@ import {
   Eye,
   Film,
   FolderOpen,
+  HelpCircle,
   ImagePlus,
   KeyRound,
   Layers3,
@@ -35,6 +36,8 @@ const RETAINED_PSD_BITMAP_LIMIT = 512 * 1024 * 1024
 const COMBO_COUNT_DISPLAY_LIMIT = 1000000
 const COMBO_COUNT_TIME_BUDGET_MS = 32
 const METADATA_FILE_NAME = 'metadata-file.csv'
+const ONE_OF_ONE_TRAIT_TYPE = '1/1'
+const RARITY_TRAIT_TYPE = 'Rarity'
 const PREVIEW_DEBOUNCE_MS = 250
 const PREVIEW_MAX_DIMENSION = 1024
 const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
@@ -62,8 +65,8 @@ const DEFAULT_PROJECT = {
 const emptyRuleDraft = { first: '', second: '' }
 const emptyRuleFolderDraft = { first: '', second: '' }
 const emptyPositionRuleDraft = { first: '', second: '', firstX: 0, firstY: 0, secondX: 0, secondY: 0 }
-const emptyConditionDraft = { category: '', requiredTrait: '' }
-const emptyFolderConflictDraft = { first: '', second: '' }
+const emptyConditionDraft = { categories: [], requiredTrait: '' }
+const emptyFolderConflictDraft = { first: [], second: [] }
 
 function isLoopbackHostname(hostname = '') {
   return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
@@ -82,6 +85,7 @@ function App() {
   const [gifBusy, setGifBusy] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
   const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
+  const [helpOpen, setHelpOpen] = useState(false)
   const [accessOpen, setAccessOpen] = useState(false)
   const [accessBusy, setAccessBusy] = useState(false)
   const [accessMessage, setAccessMessage] = useState('')
@@ -113,6 +117,7 @@ function App() {
   const psdInputRef = useRef(null)
   const baseInputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const oneOfOneInputRef = useRef(null)
   const traitFilesInputRef = useRef(null)
   const traitUploadCategoryRef = useRef(null)
   const baseFileRef = useRef(null)
@@ -246,6 +251,7 @@ function App() {
   const maxEditionsInfo = maxEditionsCacheRef.current.value
   const maxEditions = maxEditionsInfo.count
   const maxEditionsCapped = maxEditionsInfo.capped
+  const oneOfOneCount = source?.oneOfOnes?.length || 0
   const samplePreviewCount = source ? Math.min(16, Math.max(1, maxEditions)) : 16
   const isMobileShareDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
     || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
@@ -583,6 +589,86 @@ function App() {
       setBusy(false)
       event.target.value = ''
     }
+  }
+
+  async function importOneOfOneFiles(files) {
+    if (!source || busy) {
+      setStatus('Load the collection traits before adding 1/1 artworks.')
+      return
+    }
+    if (!(await ensureHolderAccess())) return
+    const imageFiles = Array.from(files || []).filter(isImageFile)
+    if (!imageFiles.length) {
+      setStatus('No PNG, JPG, or WebP 1/1 artworks were found.')
+      return
+    }
+
+    setBusy(true)
+    setStatus(`Reading ${imageFiles.length} unique 1/1 ${imageFiles.length === 1 ? 'artwork' : 'artworks'}...`)
+    try {
+      const existingIds = new Set((source.oneOfOnes || []).map((artwork) => artwork.id))
+      const additions = []
+      for (const file of imageFiles.sort((first, second) => first.name.localeCompare(second.name))) {
+        const originalName = cleanName(file.name) || 'Untitled 1/1'
+        let suffix = 1
+        let id = makeOneOfOneId(file.name)
+        while (existingIds.has(id)) {
+          suffix += 1
+          id = makeOneOfOneId(`${file.name}#${suffix}`)
+        }
+        existingIds.add(id)
+        additions.push({
+          id,
+          originalName,
+          name: originalName,
+          fileName: file.name,
+          image: await loadImageFromFile(file),
+        })
+      }
+      const nextSource = { ...source, oneOfOnes: [...(source.oneOfOnes || []), ...additions] }
+      setSource(nextSource)
+      setStatus(`Added ${additions.length} unique 1/1 ${additions.length === 1 ? 'artwork' : 'artworks'}. Each will be generated exactly once.`)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not add those 1/1 artworks.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleOneOfOneUpload(event) {
+    const files = Array.from(event.target.files || [])
+    event.target.value = ''
+    await importOneOfOneFiles(files)
+  }
+
+  async function handleOneOfOneDrop(event) {
+    event.preventDefault()
+    setActiveDropTarget('')
+    if (busy) return
+    try {
+      const files = await collectDroppedFiles(event.dataTransfer)
+      await importOneOfOneFiles(files)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not read that 1/1 folder.'))
+    }
+  }
+
+  function renameOneOfOne(index, value) {
+    if (!source || busy) return
+    setSource({
+      ...source,
+      oneOfOnes: (source.oneOfOnes || []).map((artwork, artworkIndex) => (
+        artworkIndex === index ? { ...artwork, name: value } : artwork
+      )),
+    })
+  }
+
+  function deleteOneOfOne(index) {
+    if (!source || busy) return
+    const artwork = source.oneOfOnes?.[index]
+    if (!artwork) return
+    setSource({ ...source, oneOfOnes: source.oneOfOnes.filter((_, artworkIndex) => artworkIndex !== index) })
+    setStatus(`${getOneOfOneName(artwork)} removed from the 1/1s.`)
   }
 
   function chooseTraitFiles(categoryIndex) {
@@ -1197,20 +1283,25 @@ function App() {
   }
 
   async function addCategoryRequirement() {
-    if (!source || busy || !conditionDraft.category || !conditionDraft.requiredTrait) return
+    if (!source || busy || !conditionDraft.categories.length || !conditionDraft.requiredTrait) return
     const existingRules = source.categoryRequirements || []
-    if (existingRules.some((rule) => rule.category === conditionDraft.category)) {
-      setStatus(`${conditionDraft.category} already has a folder rule.`)
+    const existingCategories = new Set(existingRules.map((rule) => rule.category))
+    const newRules = conditionDraft.categories
+      .filter((category) => !existingCategories.has(category))
+      .map((category) => ({ category, requiredTrait: conditionDraft.requiredTrait }))
+    if (!newRules.length) {
+      setStatus('Every selected folder already has a folder rule.')
       return
     }
 
     const nextSource = {
       ...source,
-      categoryRequirements: [...existingRules, { ...conditionDraft }],
+      categoryRequirements: [...existingRules, ...newRules],
     }
     setSource(nextSource)
     setConditionDraft(emptyConditionDraft)
-    setStatus('Folder rule added.')
+    const skippedCount = conditionDraft.categories.length - newRules.length
+    setStatus(`Added ${newRules.length} folder ${newRules.length === 1 ? 'rule' : 'rules'}.${skippedCount ? ` Skipped ${skippedCount} folder${skippedCount === 1 ? '' : 's'} with existing rules.` : ''}`)
     await renderPreview(nextSource)
   }
 
@@ -1226,23 +1317,51 @@ function App() {
   }
 
   async function addCategoryConflict() {
-    if (!source || busy || !folderConflictDraft.first || !folderConflictDraft.second || folderConflictDraft.first === folderConflictDraft.second) return
-    const [first, second] = normalizeRule(folderConflictDraft.first, folderConflictDraft.second)
-    const ruleKey = `${first}||${second}`
+    if (!source || busy || !folderConflictDraft.first.length || !folderConflictDraft.second.length) return
     const existingRules = source.categoryConflicts || []
-    if (existingRules.some((rule) => makeRuleKey(rule) === ruleKey)) {
-      setStatus('That folder conflict already exists.')
+    const ruleKeys = new Set(existingRules.map(makeRuleKey))
+    const newRules = []
+    for (const firstCategory of folderConflictDraft.first) {
+      for (const secondCategory of folderConflictDraft.second) {
+        if (firstCategory === secondCategory) continue
+        const [first, second] = normalizeRule(firstCategory, secondCategory)
+        const ruleKey = `${first}||${second}`
+        if (ruleKeys.has(ruleKey)) continue
+        ruleKeys.add(ruleKey)
+        newRules.push({ first, second })
+      }
+    }
+    if (!newRules.length) {
+      setStatus('No new folder-conflict combinations were selected.')
       return
     }
 
     const nextSource = {
       ...source,
-      categoryConflicts: [...existingRules, { first, second }],
+      categoryConflicts: [...existingRules, ...newRules],
     }
     setSource(nextSource)
     setFolderConflictDraft(emptyFolderConflictDraft)
-    setStatus('Folder conflict added.')
+    setStatus(`Added ${newRules.length} folder ${newRules.length === 1 ? 'conflict' : 'conflicts'}.`)
     await renderPreview(nextSource)
+  }
+
+  function toggleConditionCategory(category) {
+    setConditionDraft((current) => ({
+      ...current,
+      categories: current.categories.includes(category)
+        ? current.categories.filter((item) => item !== category)
+        : [...current.categories, category],
+    }))
+  }
+
+  function toggleFolderConflictCategory(side, category) {
+    setFolderConflictDraft((current) => ({
+      ...current,
+      [side]: current[side].includes(category)
+        ? current[side].filter((item) => item !== category)
+        : [...current[side], category],
+    }))
   }
 
   async function removeCategoryConflict(ruleIndex) {
@@ -1502,7 +1621,11 @@ function App() {
     try {
       const zip = new JSZip()
       const images = zip.folder('images')
-      const metadataCategories = activeCategories.map((category) => category.name)
+      const oneOfOnes = source.oneOfOnes || []
+      const metadataCategories = [
+        ...activeCategories.map((category) => category.name),
+        ...(oneOfOnes.length ? [ONE_OF_ONE_TRAIT_TYPE, RARITY_TRAIT_TYPE] : []),
+      ]
       const metadataRows = []
       const manifest = []
       const combos =
@@ -1532,6 +1655,9 @@ function App() {
             positionRules: (source.positionRules || []).length,
             categoryRequirements: rules.categoryRequirements.length,
             categoryConflicts: rules.categoryConflicts.length,
+            collectionEditions: combos.length,
+            oneOfOneEditions: oneOfOnes.length,
+            totalEditions: combos.length + oneOfOnes.length,
             validationPassed: true,
           },
           null,
@@ -1568,6 +1694,34 @@ function App() {
         }
       }
 
+      for (let index = 0; index < oneOfOnes.length; index += 1) {
+        const artwork = oneOfOnes[index]
+        const edition = combos.length + index + 1
+        const blob = await renderOneOfOneArtwork(artwork, {
+          mime: output.mime,
+          quality,
+          maxDimension,
+        })
+        const imageFileName = `${edition}.${output.extension}`
+        const oneOfOneName = getOneOfOneName(artwork)
+        const attributes = [
+          { trait_type: ONE_OF_ONE_TRAIT_TYPE, value: oneOfOneName },
+          { trait_type: RARITY_TRAIT_TYPE, value: ONE_OF_ONE_TRAIT_TYPE },
+        ]
+        images.file(imageFileName, blob)
+        metadataRows.push(buildOneOfOneMetadataCsvRow(edition, imageFileName, project, metadataCategories, oneOfOneName))
+        manifest.push({
+          edition,
+          tokenId: edition,
+          image: `images/${imageFileName}`,
+          metadata: METADATA_FILE_NAME,
+          oneOfOne: true,
+          attributes,
+        })
+        setStatus(`Added ${index + 1} of ${oneOfOnes.length} unique 1/1 artworks...`)
+        await waitForPaint()
+      }
+
       zip.file(METADATA_FILE_NAME, buildMetadataCsv(metadataCategories, metadataRows))
       zip.file('manifest.json', JSON.stringify(manifest, null, 2))
       setStatus('Packaging ZIP… 0%')
@@ -1598,7 +1752,9 @@ function App() {
         return zipUrl
       })
       setLastZipName(zipName)
-      setStatus(`Done. ${combos.length} ${output.label} images and ${METADATA_FILE_NAME} are ready.`)
+      const totalEditions = combos.length + oneOfOnes.length
+      const oneOfOneMessage = oneOfOnes.length ? `, including ${oneOfOnes.length} unique 1/1${oneOfOnes.length === 1 ? '' : 's'}` : ''
+      setStatus(`Done. ${totalEditions} ${output.label} images${oneOfOneMessage} and ${METADATA_FILE_NAME} are ready.`)
     } catch (error) {
       setStatus(getErrorMessage(error, 'Generation failed.'))
     } finally {
@@ -1681,10 +1837,24 @@ function App() {
   const positionRules = source?.positionRules || []
   const categoryRequirements = source?.categoryRequirements || []
   const categoryConflicts = source?.categoryConflicts || []
+  const categoryRequirementNames = new Set(categoryRequirements.map((rule) => rule.category))
+  const pendingFolderRuleCount = conditionDraft.categories.filter((category) => !categoryRequirementNames.has(category)).length
+  const existingFolderConflictKeys = new Set(categoryConflicts.map(makeRuleKey))
+  const pendingFolderConflictKeys = new Set()
+  for (const first of folderConflictDraft.first) {
+    for (const second of folderConflictDraft.second) {
+      if (first === second) continue
+      const ruleKey = makeRuleKey({ first, second })
+      if (!existingFolderConflictKeys.has(ruleKey)) pendingFolderConflictKeys.add(ruleKey)
+    }
+  }
+  const pendingFolderConflictCount = pendingFolderConflictKeys.size
   const traitEditorCategory = selectedCategory || source?.categories?.[0] || null
   const traitEditorCategoryIndex = source?.categories?.length ? Math.min(selectedCategoryIndex, source.categories.length - 1) : 0
   const traitEditorTraitIndex = traitEditorCategory?.traits?.length ? Math.min(selectedTraitIndex, traitEditorCategory.traits.length - 1) : 0
   const traitEditorTrait = traitEditorCategory?.traits?.[traitEditorTraitIndex] || null
+  const traitEditorNoneChance = getNormalizedNoneChance(traitEditorCategory)
+  const traitEditorTraitChance = getNormalizedTraitChance(traitEditorCategory, traitEditorTrait)
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
   const positionFirstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
   const positionSecondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
@@ -1706,6 +1876,10 @@ function App() {
           <h1>Trait Forge</h1>
         </div>
         <div className="topbar-actions">
+          <button className="help-action" type="button" onClick={() => setHelpOpen(true)}>
+            <HelpCircle size={17} />
+            Help
+          </button>
           <div className="status-pill">
             {busy ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
             <span>{status}</span>
@@ -1754,6 +1928,45 @@ function App() {
               Trait folders
             </button>
           </div>
+          {source && <section className="one-of-ones-panel" aria-label="Unique one of one artworks">
+            <button
+              className={`one-of-ones-drop ${activeDropTarget === 'one-of-ones' ? 'drag-active' : ''}`}
+              type="button"
+              onClick={() => oneOfOneInputRef.current?.click()}
+              onDragEnter={(event) => handleDropOver(event, 'one-of-ones')}
+              onDragOver={(event) => handleDropOver(event, 'one-of-ones')}
+              onDragLeave={(event) => handleDropLeave(event, 'one-of-ones')}
+              onDrop={handleOneOfOneDrop}
+              disabled={busy || !source}
+            >
+              <ImagePlus size={19} />
+              <span>
+                <strong>1/1s folder</strong>
+                <small>Drop complete artworks here. They never mix with traits.</small>
+              </span>
+              <b>{source?.oneOfOnes?.length || 0}</b>
+            </button>
+            {!!source?.oneOfOnes?.length && (
+              <div className="one-of-ones-list">
+                {source.oneOfOnes.map((artwork, index) => (
+                  <div className="one-of-one-row" key={artwork.id}>
+                    <OneOfOneThumbnail artwork={artwork} />
+                    <label>
+                      <span>1/1 trait name</span>
+                      <input
+                        value={artwork.name}
+                        aria-label={`Name for 1/1 artwork ${index + 1}`}
+                        onChange={(event) => renameOneOfOne(index, event.target.value)}
+                      />
+                    </label>
+                    <button type="button" aria-label={`Remove ${getOneOfOneName(artwork)}`} onClick={() => deleteOneOfOne(index)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>}
           <button className="backup-action" type="button" onClick={chooseProjectBackup} disabled={busy || !source}>
             <Archive size={18} />
             Restore project backup
@@ -1763,6 +1976,7 @@ function App() {
           <input ref={psdInputRef} className="hidden" type="file" accept=".psd,image/vnd.adobe.photoshop" onChange={handlePsdUpload} />
           <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBaseUpload} />
           <input ref={folderInputRef} className="hidden" type="file" webkitdirectory="true" directory="" multiple onChange={handleFolderUpload} />
+          <input ref={oneOfOneInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" webkitdirectory="true" directory="" multiple onChange={handleOneOfOneUpload} />
           <input ref={traitFilesInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleTraitFilesUpload} />
 
           <div className="trait-list">
@@ -1950,40 +2164,16 @@ function App() {
             <textarea value={project.description} rows="3" onChange={(event) => updateProject('description', event.target.value)} />
           </label>
           <label>
-            Image URI prefix
-            <input value={project.imagePrefix} onChange={(event) => updateProject('imagePrefix', event.target.value)} />
-          </label>
-
-          <label>
-            Editions
+            Collection editions
             <input type="number" min="1" value={project.count} onChange={(event) => updateProject('count', event.target.value)} />
             <span className="field-hint">
               {maxEditionsInfo.approximate
                 ? `${formatComboCount(maxEditionsInfo)} — live counting paused to keep editing fast.`
                 : maxEditions
-                  ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} possible combinations`
+                  ? `${editionFormula} = ${formatComboCount(maxEditionsInfo)} possible combinations${oneOfOneCount ? `, plus ${oneOfOneCount} guaranteed 1/1${oneOfOneCount === 1 ? '' : 's'}.` : ''}`
                   : 'Load traits to calculate possible combinations.'}
             </span>
           </label>
-
-          <label>
-            Random seed
-            <input value={project.seed} onChange={(event) => updateProject('seed', event.target.value)} />
-          </label>
-
-          <div className="segmented" aria-label="Generation mode">
-            <button className={project.mode === 'random' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'random')}>
-              <Shuffle size={16} />
-              Random sample
-            </button>
-            <button className={project.mode === 'all' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'all')}>
-              <Archive size={16} />
-              All in order
-            </button>
-          </div>
-          <span className="mode-hint">
-            {project.mode === 'random' ? 'Uses the seed to pick unique combinations.' : 'Walks through every possible combination until Editions is reached.'}
-          </span>
 
           <div className="segmented three-up" aria-label="Output image format">
             {Object.entries(OUTPUT_FORMATS).map(([key, format]) => (
@@ -2002,10 +2192,41 @@ function App() {
           )}
 
           <label>
-            Max image side
+            Image size
             <input type="number" min="0" max="12000" value={project.maxDimension} onChange={(event) => updateProject('maxDimension', event.target.value)} />
-            <span className="field-hint">Use 0 for original size.</span>
+            <span className="field-hint">
+              {Number(project.maxDimension) > 0
+                ? `${Math.floor(Number(project.maxDimension)).toLocaleString()} × ${Math.floor(Number(project.maxDimension)).toLocaleString()} px`
+                : 'Original image size'}
+            </span>
           </label>
+
+          <details className="advanced-settings">
+            <summary>Advanced</summary>
+            <div className="advanced-settings-content">
+              <label>
+                Image URI prefix
+                <input value={project.imagePrefix} onChange={(event) => updateProject('imagePrefix', event.target.value)} />
+              </label>
+              <label>
+                Random seed
+                <input value={project.seed} onChange={(event) => updateProject('seed', event.target.value)} />
+              </label>
+              <div className="segmented" aria-label="Generation mode">
+                <button className={project.mode === 'random' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'random')}>
+                  <Shuffle size={16} />
+                  Random sample
+                </button>
+                <button className={project.mode === 'all' ? 'active' : ''} type="button" onClick={() => updateProject('mode', 'all')}>
+                  <Archive size={16} />
+                  All in order
+                </button>
+              </div>
+              <span className="mode-hint">
+                {project.mode === 'random' ? 'Uses the seed to pick unique combinations.' : 'Walks through every possible combination until Editions is reached.'}
+              </span>
+            </div>
+          </details>
 
           <button className="sample-preview-action" type="button" onClick={generateSamplePreview} disabled={busy || !source}>
             {busy && samplePreviewOpen ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
@@ -2054,6 +2275,82 @@ function App() {
               <CheckCircle2 size={18} />
               I understand and agree
             </button>
+          </section>
+        </div>
+      )}
+
+      {helpOpen && (
+        <div className="modal-backdrop help-backdrop" role="presentation">
+          <section className="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Guide and calculations</p>
+                <h2 id="help-title">Trait Forge Help</h2>
+              </div>
+              <button type="button" aria-label="Close help" onClick={() => setHelpOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="help-content">
+              <section className="chance-formula-card">
+                <div>
+                  <HelpCircle size={21} />
+                  <span>
+                    <strong>How chances work</strong>
+                    <small>Higher numbers appear more often. Lower numbers appear less often.</small>
+                  </span>
+                </div>
+                <code>10 red tickets + 90 blue tickets = red appears about 10 times out of 100</code>
+                <p>
+                  Imagine putting tickets into a hat for every trait in a folder. A trait with a higher number gets more tickets, so it is picked more often. “No trait” is another ticket option that leaves the folder empty.
+                </p>
+                <p className="help-caveat">
+                  Example: a 10% chance in a 1,000-image collection should appear about 100 times. The final number may be a little different because every generated image must be unique and follow your rules.
+                </p>
+              </section>
+
+              <div className="help-faq" aria-label="Frequently asked questions">
+                <details open>
+                  <summary>What does “No trait chance” do?</summary>
+                  <p>
+                    It lets the generator leave this folder empty. At 0, a trait from the folder always appears. Raise the number to leave the folder empty more often. The “Estimated” line shows the chance Trait Forge calculates from all the numbers in that folder.
+                  </p>
+                </details>
+                <details>
+                  <summary>What does Smart Rarity do?</summary>
+                  <p>
+                    Smart Rarity gives you a balanced starting point automatically. It makes most traits fairly common, makes a small group rare, and avoids making one trait appear in almost every image.
+                  </p>
+                  <p>
+                    For optional folders, it also adds a sensible “No trait” chance. Folders marked “Always” stay at 0%, so one of their traits appears in every image. You can change any of these numbers afterward.
+                  </p>
+                </details>
+                <details>
+                  <summary>What is the random seed?</summary>
+                  <p>
+                    It is like a shuffle code. Using the same code and settings gives you the same shuffled collection again. Change it when you want a different shuffle.
+                  </p>
+                </details>
+                <details>
+                  <summary>What do trait and folder rules do?</summary>
+                  <p>
+                    Rules tell Trait Forge which things are allowed together. Trait rules block a pair of individual traits. Folder rules show a folder only when a chosen trait is present. Folder conflicts stop two complete folders from appearing together. These rules can make the final trait counts slightly different from the estimated chances.
+                  </p>
+                </details>
+                <details>
+                  <summary>How are 1/1 artworks handled?</summary>
+                  <p>
+                    A 1/1 is a finished special artwork. It is added once, never mixed with other traits, and marked as a unique 1/1 in the metadata.
+                  </p>
+                </details>
+                <details>
+                  <summary>What does Image size control?</summary>
+                  <p>
+                    It controls how large exported images can be. Trait Forge keeps the artwork’s shape and proportions. Enter 0 if you want to keep the original image size.
+                  </p>
+                </details>
+              </div>
+            </div>
           </section>
         </div>
       )}
@@ -2164,6 +2461,10 @@ function App() {
                 <h2>Trait editor</h2>
               </div>
               <div className="modal-header-actions">
+                <button className="modal-faq-action" type="button" onClick={() => setHelpOpen(true)}>
+                  <HelpCircle size={16} />
+                  FAQ
+                </button>
                 <button
                   className="modal-add-traits-action"
                   type="button"
@@ -2217,16 +2518,30 @@ function App() {
 
               <section className="trait-editor-list" aria-label="Traits in selected folder">
                 <header className="trait-editor-list-header">
-                  <div>
+                  <div className="selected-folder-heading">
                     <p className="eyebrow">Selected folder</p>
-                    <h3>{traitEditorCategory?.name}</h3>
+                    <div className="selected-folder-title-row">
+                      <h3>{traitEditorCategory?.name}</h3>
+                      <span>{traitEditorCategory?.traits.length || 0} traits</span>
+                    </div>
                   </div>
                   <div className="selected-folder-controls">
-                    <span>{traitEditorCategory?.traits.length || 0} traits</span>
-                    <label className="folder-none-chance">
-                      No trait chance
+                    <div className="folder-none-chance">
+                      <div className="chance-label-row">
+                        <label htmlFor="folder-none-chance-input">No trait chance</label>
+                        <button
+                          className="feature-tooltip"
+                          type="button"
+                          aria-label="Explain no trait chance"
+                          data-tooltip="How often this folder should be left empty. Click for a simple example."
+                          onClick={() => setHelpOpen(true)}
+                        >
+                          <HelpCircle size={13} />
+                        </button>
+                      </div>
                       <div className="input-with-suffix">
                         <input
+                          id="folder-none-chance-input"
                           type="number"
                           min="0"
                           max="100"
@@ -2237,7 +2552,8 @@ function App() {
                         />
                         <span>%</span>
                       </div>
-                    </label>
+                      <small>Estimated: {formatChance(traitEditorNoneChance)} of images</small>
+                    </div>
                   </div>
                 </header>
                 <div className="trait-editor-list-scroll">
@@ -2249,7 +2565,7 @@ function App() {
                       onClick={() => setSelectedTraitIndex(traitIndex)}
                     >
                       <span>{getTraitMetadataName(trait)}</span>
-                      <small>Rarity {getTraitWeight(trait)}% · Position X {getTraitOffset(trait, 'x')} · Position Y {getTraitOffset(trait, 'y')}</small>
+                      <small>Estimated chance {formatChance(getNormalizedTraitChance(traitEditorCategory, trait))} · Position X {getTraitOffset(trait, 'x')} · Y {getTraitOffset(trait, 'y')}</small>
                     </button>
                   ))}
                 </div>
@@ -2327,10 +2643,22 @@ function App() {
                           onChange={(event) => renameTrait(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
                         />
                       </label>
-                      <label>
-                        Chance
+                      <div className="trait-chance-field">
+                        <div className="chance-label-row">
+                          <label htmlFor="selected-trait-chance-input">Chance setting</label>
+                          <button
+                            className="feature-tooltip"
+                            type="button"
+                            aria-label="Explain trait chance"
+                            data-tooltip="Higher numbers appear more often. Lower numbers appear less often. Click for a simple example."
+                            onClick={() => setHelpOpen(true)}
+                          >
+                            <HelpCircle size={13} />
+                          </button>
+                        </div>
                         <div className="input-with-suffix">
                           <input
+                            id="selected-trait-chance-input"
                             type="number"
                             min="0"
                             max="100"
@@ -2341,7 +2669,8 @@ function App() {
                           />
                           <span>%</span>
                         </div>
-                      </label>
+                        <small>Estimated chance: {formatChance(traitEditorTraitChance)}</small>
+                      </div>
                       <div className="trait-inspector-position">
                         <div className="position-title">
                           <span>Position</span>
@@ -2787,14 +3116,27 @@ function App() {
                   </span>
                   <strong>{categoryRequirements.length}</strong>
                 </div>
-                <p>Only apply an entire folder when a specific trait is selected.</p>
-                <label>
-                  Folder
-                  <select value={conditionDraft.category} disabled={busy} onChange={(event) => setConditionDraft((current) => ({ ...current, category: event.target.value }))}>
-                    <option value="">Choose folder</option>
-                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
-                  </select>
-                </label>
+                <p>Tick every folder that should only apply when the selected trait appears.</p>
+                <fieldset className="multi-rule-picker">
+                  <legend>Folders</legend>
+                  <div className="multi-rule-options">
+                    {source.categories.map((category, index) => {
+                      const hasRule = categoryRequirementNames.has(category.name)
+                      return (
+                        <label className="multi-rule-option" key={`${category.name}-${index}`}>
+                          <input
+                            type="checkbox"
+                            checked={conditionDraft.categories.includes(category.name)}
+                            disabled={busy || hasRule}
+                            onChange={() => toggleConditionCategory(category.name)}
+                          />
+                          <span>{category.name}</span>
+                          {hasRule && <small>Rule exists</small>}
+                        </label>
+                      )
+                    })}
+                  </div>
+                </fieldset>
                 <div className="trait-picker-field">
                   <label>
                     Only apply when
@@ -2805,9 +3147,9 @@ function App() {
                   </label>
                   <ManagerTraitPreview traitKey={conditionDraft.requiredTrait} url={managerPreviewUrls[conditionDraft.requiredTrait]} label={traitOptionMap.get(conditionDraft.requiredTrait)} />
                 </div>
-                <button className="rule-add" type="button" disabled={busy || !conditionDraft.category || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
+                <button className="rule-add" type="button" disabled={busy || !pendingFolderRuleCount || !conditionDraft.requiredTrait} onClick={addCategoryRequirement}>
                   <Ban size={16} />
-                  Add folder rule
+                  {pendingFolderRuleCount ? `Add ${pendingFolderRuleCount} folder ${pendingFolderRuleCount === 1 ? 'rule' : 'rules'}` : 'Add folder rules'}
                 </button>
                 {categoryRequirements.length ? (
                   <div className="rule-list">
@@ -2836,24 +3178,44 @@ function App() {
                   </span>
                   <strong>{categoryConflicts.length}</strong>
                 </div>
-                <p>Prevent two entire folders from rendering in the same image.</p>
-                <label>
-                  First folder
-                  <select value={folderConflictDraft.first} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, first: event.target.value }))}>
-                    <option value="">Choose folder</option>
-                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Cannot appear with
-                  <select value={folderConflictDraft.second} disabled={busy} onChange={(event) => setFolderConflictDraft((current) => ({ ...current, second: event.target.value }))}>
-                    <option value="">Choose folder</option>
-                    {source.categories.map((category, index) => <option value={category.name} key={`${category.name}-${index}`}>{category.name}</option>)}
-                  </select>
-                </label>
-                <button className="rule-add" type="button" disabled={busy || !folderConflictDraft.first || !folderConflictDraft.second || folderConflictDraft.first === folderConflictDraft.second} onClick={addCategoryConflict}>
+                <p>Tick folders on both sides to create every new conflict combination between them.</p>
+                <div className="folder-conflict-pickers">
+                  <fieldset className="multi-rule-picker">
+                    <legend>Folders</legend>
+                    <div className="multi-rule-options">
+                      {source.categories.map((category, index) => (
+                        <label className="multi-rule-option" key={`${category.name}-${index}`}>
+                          <input
+                            type="checkbox"
+                            checked={folderConflictDraft.first.includes(category.name)}
+                            disabled={busy}
+                            onChange={() => toggleFolderConflictCategory('first', category.name)}
+                          />
+                          <span>{category.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <fieldset className="multi-rule-picker">
+                    <legend>Cannot appear with</legend>
+                    <div className="multi-rule-options">
+                      {source.categories.map((category, index) => (
+                        <label className="multi-rule-option" key={`${category.name}-${index}`}>
+                          <input
+                            type="checkbox"
+                            checked={folderConflictDraft.second.includes(category.name)}
+                            disabled={busy}
+                            onChange={() => toggleFolderConflictCategory('second', category.name)}
+                          />
+                          <span>{category.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                </div>
+                <button className="rule-add" type="button" disabled={busy || !pendingFolderConflictCount} onClick={addCategoryConflict}>
                   <Ban size={16} />
-                  Add folder conflict
+                  {pendingFolderConflictCount ? `Add ${pendingFolderConflictCount} folder ${pendingFolderConflictCount === 1 ? 'conflict' : 'conflicts'}` : 'Add folder conflicts'}
                 </button>
                 {categoryConflicts.length ? (
                   <div className="rule-list">
@@ -3019,6 +3381,24 @@ function ManagerTraitPreview({ traitKey, url, label }) {
   )
 }
 
+function OneOfOneThumbnail({ artwork }) {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const image = artwork?.image
+    if (!canvas || !image?.naturalWidth || !image.naturalHeight) return
+    const context = canvas.getContext('2d')
+    const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight)
+    const width = image.naturalWidth * scale
+    const height = image.naturalHeight * scale
+    context.clearRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height)
+  }, [artwork])
+
+  return <canvas ref={canvasRef} width="76" height="76" aria-hidden="true" />
+}
+
 function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange }) {
   if (!traitKey) return <div className="trait-position-controls empty">Select a trait to set its pair position.</div>
   const traitName = label?.split(' / ').at(-1) || 'trait'
@@ -3125,6 +3505,12 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
       positionRules: (source.positionRules || []).map((rule) => ({ ...rule })),
       categoryRequirements: source.categoryRequirements || [],
       categoryConflicts: source.categoryConflicts || [],
+      oneOfOnes: (source.oneOfOnes || []).map((artwork) => ({
+        id: artwork.id,
+        originalName: artwork.originalName,
+        name: getOneOfOneName(artwork),
+        fileName: artwork.fileName,
+      })),
     },
   }
 }
@@ -3212,6 +3598,12 @@ function restoreProjectBackup(source, backup) {
   const restoredSource = {
     ...source,
     categories: restoredCategories,
+    oneOfOnes: (source.oneOfOnes || []).map((artwork) => {
+      const backupArtwork = (backup.source.oneOfOnes || []).find((candidate) => (
+        candidate.id === artwork.id || candidate.originalName === artwork.originalName || candidate.fileName === artwork.fileName
+      ))
+      return backupArtwork ? { ...artwork, name: backupArtwork.name } : artwork
+    }),
     incompatibilities,
     positionRules,
     categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
@@ -3339,6 +3731,7 @@ function parsePsd(psd, fileName) {
     height: psd.height,
     baseLayers,
     categories,
+    oneOfOnes: [],
     incompatibilities: [],
     positionRules: [],
     categoryRequirements: [],
@@ -3443,6 +3836,7 @@ async function parseFolders(files, baseFile) {
     height,
     baseImage,
     categories,
+    oneOfOnes: [],
     incompatibilities: [],
     positionRules: [],
     categoryRequirements: [],
@@ -3743,6 +4137,29 @@ function getTraitWeight(trait) {
   return Number.isFinite(weight) ? Math.max(0, weight) : 0
 }
 
+function getCategoryTotalWeight(category) {
+  if (!category) return 0
+  return category.traits.reduce((total, trait) => total + getTraitWeight(trait), getCategoryNoneWeight(category))
+}
+
+function getNormalizedTraitChance(category, trait) {
+  if (!category || !trait) return 0
+  const totalWeight = getCategoryTotalWeight(category)
+  return totalWeight > 0 ? (getTraitWeight(trait) / totalWeight) * 100 : 0
+}
+
+function getNormalizedNoneChance(category) {
+  const totalWeight = getCategoryTotalWeight(category)
+  return totalWeight > 0 ? (getCategoryNoneWeight(category) / totalWeight) * 100 : 0
+}
+
+function formatChance(value) {
+  const chance = Number(value)
+  if (!Number.isFinite(chance) || chance <= 0) return '0%'
+  const precision = chance < 1 ? 2 : 1
+  return `${Number(chance.toFixed(precision))}%`
+}
+
 function getTraitOffset(trait, axis) {
   const value = Number(axis === 'y' ? trait?.offsetY : trait?.offsetX)
   return Number.isFinite(value) ? Math.round(value) : 0
@@ -3840,6 +4257,14 @@ function buildMetadataCsvRow(tokenId, imageFileName, project, categories, combo)
   return [tokenId, `${project.name} #${tokenId}`, project.description, imageFileName, '', ...categories.map((category) => traitByCategory.get(category) || '')]
 }
 
+function buildOneOfOneMetadataCsvRow(tokenId, imageFileName, project, categories, artworkName) {
+  const values = new Map([
+    [ONE_OF_ONE_TRAIT_TYPE, artworkName],
+    [RARITY_TRAIT_TYPE, ONE_OF_ONE_TRAIT_TYPE],
+  ])
+  return [tokenId, `${project.name} #${tokenId} — ${artworkName}`, project.description, imageFileName, '', ...categories.map((category) => values.get(category) || '')]
+}
+
 function formatCsvCell(value) {
   const cell = String(value ?? '')
   if (!/[",\n\r]/.test(cell)) return cell
@@ -3912,6 +4337,64 @@ function loadImageFromFile(file) {
     }
     image.src = url
   })
+}
+
+function isImageFile(file) {
+  return IMAGE_TYPES.includes(file?.type) || /\.(png|jpe?g|webp)$/i.test(file?.name || '')
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const entries = Array.from(dataTransfer?.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter(Boolean)
+  if (!entries.length) return Array.from(dataTransfer?.files || [])
+  const nestedFiles = await Promise.all(entries.map(readDroppedEntry))
+  return nestedFiles.flat()
+}
+
+async function readDroppedEntry(entry) {
+  if (entry.isFile) {
+    return new Promise((resolve, reject) => entry.file((file) => resolve([file]), reject))
+  }
+  if (!entry.isDirectory) return []
+  const reader = entry.createReader()
+  const children = []
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) break
+    children.push(...batch)
+  }
+  return (await Promise.all(children.map(readDroppedEntry))).flat()
+}
+
+function makeOneOfOneId(name) {
+  return `one-of-one::${name}`
+}
+
+function getOneOfOneName(artwork) {
+  return cleanName(artwork?.name) || artwork?.originalName || 'Untitled 1/1'
+}
+
+async function renderOneOfOneArtwork(artwork, options = {}) {
+  const image = artwork?.image
+  if (!image?.naturalWidth || !image.naturalHeight) throw new Error(`Could not render ${getOneOfOneName(artwork)}.`)
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+  const context = canvas.getContext('2d')
+  context.drawImage(image, 0, 0)
+  const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
+  try {
+    return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+  } finally {
+    if (exportCanvas !== canvas) {
+      exportCanvas.width = 0
+      exportCanvas.height = 0
+    }
+    canvas.width = 0
+    canvas.height = 0
+  }
 }
 
 function resizeCanvasForExport(canvas, maxDimension = 0) {
