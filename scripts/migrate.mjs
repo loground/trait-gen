@@ -4,12 +4,15 @@ import { neon } from '@neondatabase/serverless'
 const databaseUrl = process.env.DATABASE_URL || ''
 if (!databaseUrl) throw new Error('DATABASE_URL is required.')
 
-const migrationUrl = new URL('../db/migrations/001_credit_ledger.sql', import.meta.url)
-const migration = await readFile(migrationUrl, 'utf8')
 const sql = neon(databaseUrl)
 
-const statements = splitSqlStatements(migration)
-for (const statement of statements) await sql.query(statement)
+const migrationFiles = ['001_credit_ledger.sql', '002_usdc_payments.sql']
+for (const fileName of migrationFiles) {
+  const migrationUrl = new URL(`../db/migrations/${fileName}`, import.meta.url)
+  const migration = await readFile(migrationUrl, 'utf8')
+  const statements = splitSqlStatements(migration)
+  for (const statement of statements) await sql.query(statement)
+}
 
 const rows = await sql`
   SELECT COUNT(*)::integer AS table_count
@@ -17,15 +20,16 @@ const rows = await sql`
   WHERE table_schema = 'public'
     AND table_name IN (
       'wallet_accounts', 'auth_nonces', 'api_rate_limits', 'credit_ledger',
-      'burn_claims', 'generation_jobs', 'access_codes', 'code_redemptions'
+      'burn_claims', 'generation_jobs', 'access_codes', 'code_redemptions',
+      'crypto_payment_quotes'
     )
 `
 
-if (Number(rows[0]?.table_count) !== 8) {
-  throw new Error(`Migration verification failed: expected 8 tables, found ${rows[0]?.table_count || 0}.`)
+if (Number(rows[0]?.table_count) !== 9) {
+  throw new Error(`Migration verification failed: expected 9 tables, found ${rows[0]?.table_count || 0}.`)
 }
 
-console.log('Migration complete: 8 credit-ledger tables verified.')
+console.log('Migration complete: 9 credit-ledger tables verified.')
 
 function splitSqlStatements(source) {
   const statements = []

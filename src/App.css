@@ -992,7 +992,7 @@ button:disabled {
   width: min(760px, 100%);
   max-height: min(840px, calc(100svh - 48px));
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: #fff;
   border: 1px solid #c6d0dd;
@@ -1084,6 +1084,31 @@ button:disabled {
   background: #fff0eb;
 }
 
+.payment-asset-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px;
+  background: #eef3f6;
+  border-radius: 10px;
+}
+
+.payment-asset-picker button {
+  min-height: 40px;
+  color: #506176;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-weight: 850;
+}
+
+.payment-asset-picker button.active {
+  color: #0b625f;
+  background: #fff;
+  border-color: #badbd7;
+  box-shadow: 0 2px 7px rgb(35 68 82 / 10%);
+}
+
 .payment-network-note {
   display: grid;
   gap: 4px;
@@ -1099,6 +1124,105 @@ button:disabled {
 .payment-network-note strong {
   color: #26384d;
   font-size: 12px;
+}
+
+.crypto-payment-steps {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0 0 0 22px;
+  color: #52647a;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.payment-copy-field {
+  display: grid;
+  gap: 5px;
+}
+
+.payment-copy-field > span {
+  color: #45576c;
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.payment-copy-field > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  overflow: hidden;
+  border: 1px solid #c6d0dd;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.payment-copy-field code {
+  min-width: 0;
+  padding: 11px 12px;
+  overflow: hidden;
+  color: #172b42;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.payment-copy-field button {
+  width: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid #c6d0dd;
+  border-radius: 0;
+  color: #0d6b67;
+}
+
+.payment-quote-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: -4px;
+  color: #708096;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.payment-quote-meta a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #0d6b67;
+  text-decoration: none;
+}
+
+.code-redemption {
+  margin-top: 18px;
+  border-top: 1px solid #d8dee8;
+}
+
+.code-redemption summary {
+  padding: 14px 2px 8px;
+  color: #52647a;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.code-redemption .payment-option-content {
+  margin-top: 8px;
+  padding: 14px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.code-redemption button[type='submit'] {
+  width: 100%;
 }
 
 .hoodchan-list-header {

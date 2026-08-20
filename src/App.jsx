@@ -8,7 +8,10 @@ import {
   ArrowUp,
   Ban,
   CheckCircle2,
+  CircleDollarSign,
+  Copy,
   Eye,
+  ExternalLink,
   Film,
   FolderOpen,
   HelpCircle,
@@ -90,6 +93,9 @@ function App() {
   const [accessBusy, setAccessBusy] = useState(false)
   const [accessMessage, setAccessMessage] = useState('')
   const [generationCode, setGenerationCode] = useState('')
+  const [paymentAsset, setPaymentAsset] = useState('USDC')
+  const [paymentQuote, setPaymentQuote] = useState(null)
+  const [paymentTransaction, setPaymentTransaction] = useState('')
   const [account, setAccount] = useState({ status: 'loading', credits: 0 })
   const [lastZipUrl, setLastZipUrl] = useState('')
   const [lastZipName, setLastZipName] = useState('')
@@ -157,6 +163,7 @@ function App() {
     }
     setAccessMessage('')
     setAccessOpen(true)
+    await loadPaymentQuote()
   }
 
   function getCollectionGenerationError(activeSource) {
@@ -235,6 +242,66 @@ function App() {
       setAccessMessage(getErrorMessage(error, 'Could not redeem that code.'))
     } finally {
       setAccessBusy(false)
+    }
+  }
+
+  async function loadPaymentQuote(asset = paymentAsset) {
+    setAccessBusy(true)
+    setPaymentAsset(asset)
+    setPaymentQuote(null)
+    setAccessMessage(`Preparing a private ${asset} payment amount…`)
+    try {
+      const response = await fetch('/api/payments/quote', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ asset }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'Could not prepare the payment.'))
+      const quote = await response.json()
+      setPaymentQuote(quote)
+      setPaymentTransaction('')
+      setAccessMessage('')
+    } catch (error) {
+      setPaymentQuote(null)
+      setAccessMessage(getErrorMessage(error, 'Could not prepare the payment.'))
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function claimUsdcPayment(event) {
+    event.preventDefault()
+    if (!paymentQuote || !paymentTransaction.trim()) return
+    setAccessBusy(true)
+    setAccessMessage(`Checking the confirmed ${paymentQuote.asset} transfer on Base…`)
+    try {
+      const response = await fetch('/api/payments/claim', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ quoteId: paymentQuote.quoteId, transaction: paymentTransaction.trim() }),
+      })
+      if (!response.ok) throw new Error(await readResponseError(response, 'Could not verify that payment.'))
+      const result = await response.json()
+      setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
+      setAccessMessage(result.alreadyClaimed ? 'This payment was already added to this browser.' : 'Payment verified. Three generation credits were added.')
+      setAccessOpen(false)
+      await authorizeAndGenerate()
+    } catch (error) {
+      setAccessMessage(getErrorMessage(error, 'Could not verify that payment.'))
+      setAccessOpen(true)
+    } finally {
+      setAccessBusy(false)
+    }
+  }
+
+  async function copyPaymentValue(label, value) {
+    try {
+      await navigator.clipboard.writeText(value)
+      setAccessMessage(`${label} copied.`)
+    } catch {
+      setAccessMessage(`Could not copy automatically. Select and copy the ${label.toLowerCase()} manually.`)
     }
   }
 
@@ -2239,7 +2306,7 @@ function App() {
               ? 'Generate ZIP · Free local mode'
               : account.credits > 0
               ? `Generate ZIP · ${account.credits} credit${account.credits === 1 ? '' : 's'}`
-              : 'Enter code to generate ZIP'}
+              : 'Buy 3 generations · ~$20 crypto'}
           </button>
 
           <button className="download-link" type="button" onClick={downloadProjectBackup} disabled={busy || !source}>
@@ -2269,7 +2336,7 @@ function App() {
             <div className="intro-price-note">
               {LOCAL_FREE_GENERATION
                 ? 'Local development mode is free and does not require a generation code.'
-                : 'ZIP generation requires a valid generation code. Codes grant free generation credits and no payment is requested.'}
+                : 'ZIP generation uses one credit. Buy 3 credits for about $20 in USDC or ETH on Base, with no wallet connection or registration required. Manual generation codes are also supported.'}
             </div>
             <button className="primary-action" type="button" onClick={acceptIntro}>
               <CheckCircle2 size={18} />
@@ -2349,6 +2416,15 @@ function App() {
                     It controls how large exported images can be. Trait Forge keeps the artwork’s shape and proportions. Enter 0 if you want to keep the original image size.
                   </p>
                 </details>
+                <details>
+                  <summary>How does the crypto payment work?</summary>
+                  <p>
+                    Choose USDC or ETH. Trait Forge shows you a payment address and a special amount close to $20. Send that exact amount using the Base network, then paste the transaction link or number. Trait Forge checks the public transaction and adds three generation credits to this browser. You do not need to connect a wallet or create an account.
+                  </p>
+                  <p>
+                    For USDC, use official USDC on Base only. For ETH, send Base ETH. Keep the page open until the credits appear, because the payment request and credits belong to this browser.
+                  </p>
+                </details>
               </div>
             </div>
           </section>
@@ -2360,32 +2436,110 @@ function App() {
           <section className="payment-modal" role="dialog" aria-modal="true" aria-labelledby="access-title">
             <header className="modal-header">
               <div>
-                <p className="eyebrow">Generation access</p>
-                <h2 id="access-title">Enter a generation code</h2>
+                <p className="eyebrow">No account or wallet connection</p>
+                <h2 id="access-title">Get 3 generation credits</h2>
               </div>
               <button type="button" aria-label="Close generation access" disabled={accessBusy} onClick={() => setAccessOpen(false)}>
                 <X size={18} />
               </button>
             </header>
             <div className="payment-panel">
-              <form className="payment-option-content" onSubmit={redeemGenerationCode}>
+              <form className="payment-option-content" onSubmit={claimUsdcPayment}>
                 <div className="payment-option-heading">
-                  <span className="payment-option-icon"><KeyRound size={24} /></span>
+                  <span className="payment-option-icon"><CircleDollarSign size={25} /></span>
                   <div>
-                    <h3>Redeem your code</h3>
-                    <p>Credits stay available in this browser after the code is redeemed.</p>
+                    <h3>Pay about $20 in crypto</h3>
+                    <p>Send from any crypto wallet on Base, then paste the transaction below.</p>
                   </div>
                 </div>
-                <label>
-                  Generation code
-                  <input type="text" autoComplete="off" placeholder="TF-…" value={generationCode} disabled={accessBusy} onChange={(event) => setGenerationCode(event.target.value)} />
-                </label>
-                <button className="primary-action" type="submit" disabled={accessBusy}>
-                  {accessBusy ? <Loader2 className="spin" size={18} /> : <KeyRound size={18} />}
-                  Apply code and generate
-                </button>
-                {accessMessage && <p className="payment-message" aria-live="polite">{accessMessage}</p>}
+                <div className="payment-asset-picker" aria-label="Choose payment asset">
+                  {['USDC', 'ETH'].map((asset) => (
+                    <button
+                      className={paymentAsset === asset ? 'active' : ''}
+                      type="button"
+                      disabled={accessBusy}
+                      aria-pressed={paymentAsset === asset}
+                      key={asset}
+                      onClick={() => loadPaymentQuote(asset)}
+                    >
+                      {asset === 'USDC' ? 'USDC on Base' : 'ETH on Base'}
+                    </button>
+                  ))}
+                </div>
+                <div className="payment-network-note">
+                  <strong>Base network · {paymentAsset === 'USDC' ? 'official USDC only' : 'native ETH only'}</strong>
+                  <span>{paymentAsset === 'USDC' ? 'Do not send ETH, bridged USDC, or tokens from another network.' : 'Do not send ETH from Ethereum mainnet or another network.'} Keep this browser open until credits are added. Crypto payments cannot be reversed.</span>
+                </div>
+
+                {paymentQuote ? (
+                  <>
+                    <ol className="crypto-payment-steps">
+                      <li>Copy the exact USDC amount and payment address.</li>
+                      <li>Send it on the <strong>Base</strong> network from any wallet.</li>
+                      <li>Paste the transaction hash or explorer link and verify.</li>
+                    </ol>
+                    <div className="payment-copy-field">
+                      <span>Exact amount</span>
+                      <div>
+                        <code>{paymentQuote.amount} {paymentQuote.asset}</code>
+                        <button type="button" aria-label={`Copy exact ${paymentQuote.asset} amount`} onClick={() => copyPaymentValue('Amount', paymentQuote.amount)}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="payment-copy-field">
+                      <span>Payment address</span>
+                      <div>
+                        <code>{paymentQuote.recipientAddress}</code>
+                        <button type="button" aria-label="Copy payment address" onClick={() => copyPaymentValue('Payment address', paymentQuote.recipientAddress)}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="payment-quote-meta">
+                      <span>Quote expires {new Date(paymentQuote.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      <a href={`${paymentQuote.explorerUrl}/address/${paymentQuote.recipientAddress}`} target="_blank" rel="noreferrer">
+                        View address <ExternalLink size={12} />
+                      </a>
+                    </div>
+                    <label>
+                      Base transaction hash or link
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        placeholder="0x… or https://base.blockscout.com/tx/…"
+                        value={paymentTransaction}
+                        disabled={accessBusy}
+                        onChange={(event) => setPaymentTransaction(event.target.value)}
+                      />
+                    </label>
+                    <button className="primary-action" type="submit" disabled={accessBusy || !paymentTransaction.trim()}>
+                      {accessBusy ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+                      Verify payment and generate
+                    </button>
+                  </>
+                ) : (
+                  <button className="primary-action" type="button" disabled={accessBusy} onClick={() => loadPaymentQuote(paymentAsset)}>
+                    {accessBusy ? <Loader2 className="spin" size={18} /> : <CircleDollarSign size={18} />}
+                    Prepare payment
+                  </button>
+                )}
               </form>
+
+              <details className="code-redemption">
+                <summary>I have a generation code</summary>
+                <form className="payment-option-content" onSubmit={redeemGenerationCode}>
+                  <label>
+                    Generation code
+                    <input type="text" autoComplete="off" placeholder="TF-…" value={generationCode} disabled={accessBusy} onChange={(event) => setGenerationCode(event.target.value)} />
+                  </label>
+                  <button type="submit" disabled={accessBusy || !generationCode.trim()}>
+                    <KeyRound size={16} />
+                    Apply code and generate
+                  </button>
+                </form>
+              </details>
+              {accessMessage && <p className="payment-message" aria-live="polite">{accessMessage}</p>}
             </div>
           </section>
         </div>

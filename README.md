@@ -11,15 +11,19 @@ npm install
 npm run dev
 ```
 
-ZIP generation is code-gated on deployed hosts. A valid code grants generation
-credits to an anonymous browser session; no wallet or payment is required.
+ZIP generation is credit-gated on deployed hosts. Users can buy 3 generation
+credits for approximately $20 in official USDC or native ETH on Base by sending
+from any wallet and pasting the transaction hash. No wallet connection or user
+registration is required. Manually issued generation codes remain available as
+a separate option.
 Loopback hosts (`localhost`, `127.0.0.1`, and `::1`) bypass codes so local
 development and previews remain free.
 
 ## Production setup
 
 1. Create a Neon PostgreSQL database and set `DATABASE_URL` in Vercel.
-2. Open Neon's SQL Editor and run `db/migrations/001_credit_ledger.sql`, or
+2. Open Neon's SQL Editor and run the SQL files in `db/migrations/` in numeric
+   order, or
    run the idempotent migration locally with a connection string copied directly
    from Neon:
 
@@ -28,8 +32,25 @@ development and previews remain free.
    ```
 3. Copy every variable in `.env.example` into Vercel Production settings. Use
    separate random values for `SESSION_SECRET` and `CODE_PEPPER`.
-4. Set `ROBINHOOD_RPC_URL` to a private mainnet RPC with historical receipts.
-5. Create a private Vercel Blob store before enabling server-side source uploads.
+4. `BASE_PAYMENT_ADDRESS` is configured as
+   `0xC7A7Ca7D3cfD3e8442c5A57a42A46fD655738276` for Base USDC and ETH payments.
+   You can override it with an environment variable. Never configure or deploy
+   a private key. `BASE_RPC_URL` defaults to Base's
+   registration-free public endpoint, which Base documents as rate limited and
+   unsuitable for high-volume production. Running your own Base node is the
+   no-registration option for higher reliability.
+5. Set `ROBINHOOD_RPC_URL` to a private mainnet RPC with historical receipts if
+   the legacy HOODCHAN burn flow is enabled.
+6. Create a private Vercel Blob store before enabling server-side source uploads.
+
+The payment wall accepts the official Base USDC contract
+`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` or native Base ETH. ETH quotes use
+Chainlink's Base ETH/USD feed at `0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70`.
+Each anonymous browser receives a short-lived exact amount close to $20. The
+small amount variation binds a public blockchain transaction to that browser so
+another visitor cannot copy the transaction hash and steal the credits.
+Payments are credited once after the configured Base confirmation count (five
+by default).
 
 Create a private generation code from a trusted terminal:
 
