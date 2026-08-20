@@ -2306,7 +2306,7 @@ function App() {
               ? 'Generate ZIP · Free local mode'
               : account.credits > 0
               ? `Generate ZIP · ${account.credits} credit${account.credits === 1 ? '' : 's'}`
-              : 'Buy 3 generations · ~$20 crypto'}
+              : 'Generate ZIP'}
           </button>
 
           <button className="download-link" type="button" onClick={downloadProjectBackup} disabled={busy || !source}>
@@ -2448,8 +2448,8 @@ function App() {
                 <div className="payment-option-heading">
                   <span className="payment-option-icon"><CircleDollarSign size={25} /></span>
                   <div>
-                    <h3>Pay about $20 in crypto</h3>
-                    <p>Send from any crypto wallet on Base, then paste the transaction below.</p>
+                    <h3>Pay $20 on Base: USDC/ETH</h3>
+                    <p>Send from any wallet, then paste the transaction below. Base only.</p>
                   </div>
                 </div>
                 <div className="payment-asset-picker" aria-label="Choose payment asset">
@@ -2526,7 +2526,7 @@ function App() {
                 )}
               </form>
 
-              <details className="code-redemption">
+              <details className="code-redemption" open>
                 <summary>I have a generation code</summary>
                 <form className="payment-option-content" onSubmit={redeemGenerationCode}>
                   <label>
@@ -2540,6 +2540,9 @@ function App() {
                 </form>
               </details>
               {accessMessage && <p className="payment-message" aria-live="polite">{accessMessage}</p>}
+              <p className="payment-support-note">
+                In case of any problems, DM: <a href="https://x.com/nickvrnn" target="_blank" rel="noreferrer">@nickvrnn</a>
+              </p>
             </div>
           </section>
         </div>

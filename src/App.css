@@ -1126,6 +1126,22 @@ button:disabled {
   font-size: 12px;
 }
 
+.payment-support-note {
+  margin: 0;
+  padding-top: 4px;
+  color: #68798e;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.payment-support-note a {
+  color: #0d6b67;
+  font-weight: 900;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .crypto-payment-steps {
   display: grid;
   gap: 7px;
