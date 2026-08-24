@@ -578,7 +578,7 @@ function App() {
   async function selectBaseFile(file) {
     if (!file) return
     if (!(await ensureHolderAccess())) return
-    if (!IMAGE_TYPES.includes(file.type)) {
+    if (!isImageFile(file)) {
       setStatus('Drop a PNG, JPG, or WebP image into Base image.')
       return
     }
@@ -621,7 +621,7 @@ function App() {
     if (target === 'preview') {
       if (file.name.toLowerCase().endsWith('.psd') || file.type === 'image/vnd.adobe.photoshop') {
         await importPsdFile(file)
-      } else if (IMAGE_TYPES.includes(file.type)) {
+      } else if (isImageFile(file)) {
         await selectBaseFile(file)
       } else {
         setStatus('Drop a PSD, PNG, JPG, or WebP file into the preview area.')
@@ -744,15 +744,11 @@ function App() {
     traitFilesInputRef.current?.click()
   }
 
-  async function handleTraitFilesUpload(event) {
-    const files = Array.from(event.target.files || [])
-    const categoryIndex = traitUploadCategoryRef.current
-    event.target.value = ''
-    traitUploadCategoryRef.current = null
+  async function importTraitFiles(categoryIndex, files) {
     if (!files.length || !source || categoryIndex === null || !source.categories[categoryIndex]) return
     if (!(await ensureHolderAccess())) return
 
-    const imageFiles = files.filter((file) => IMAGE_TYPES.includes(file.type))
+    const imageFiles = Array.from(files).filter(isImageFile)
     if (!imageFiles.length) {
       setStatus('Choose PNG, JPG, or WebP trait images.')
       return
@@ -799,6 +795,14 @@ function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function handleTraitFilesUpload(event) {
+    const files = Array.from(event.target.files || [])
+    const categoryIndex = traitUploadCategoryRef.current
+    event.target.value = ''
+    traitUploadCategoryRef.current = null
+    await importTraitFiles(categoryIndex, files)
   }
 
   async function renderPreview(activeSource = source) {
@@ -1186,6 +1190,12 @@ function App() {
   }
 
   function handleTraitFolderDragOver(event, categoryIndex) {
+    if (Array.from(event.dataTransfer?.types || []).includes('Files') && !busy) {
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'copy'
+      setTraitDropCategoryIndex(categoryIndex)
+      return
+    }
     const draggedTrait = draggedTraitRef.current
     if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
     event.preventDefault()
@@ -1203,6 +1213,13 @@ function App() {
 
   async function handleTraitFolderDrop(event, categoryIndex) {
     event.preventDefault()
+    const droppedFiles = Array.from(event.dataTransfer?.files || [])
+    if (droppedFiles.length) {
+      finishTraitFolderDrag()
+      setExpandedCategoryIndices((current) => (current.includes(categoryIndex) ? current : [...current, categoryIndex]))
+      await importTraitFiles(categoryIndex, droppedFiles)
+      return
+    }
     const draggedTrait = draggedTraitRef.current
     finishTraitFolderDrag()
     if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
@@ -1845,7 +1862,8 @@ function App() {
     document.body.appendChild(link)
     link.click()
     link.remove()
-    URL.revokeObjectURL(url)
+    // Revoking synchronously can cancel an otherwise valid download in Safari.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     setStatus('Project backup downloaded. Keep this JSON with your PSD.')
   }
 
@@ -2697,15 +2715,15 @@ function App() {
                         </button>
                       </div>
                       <div className="input-with-suffix">
-                        <input
+                        <CommittedDecimalInput
+                          key={`none-weight-${traitEditorCategoryIndex}`}
                           id="folder-none-chance-input"
-                          type="number"
                           min="0"
                           max="100"
-                          step="0.1"
                           value={getCategoryNoneWeight(traitEditorCategory)}
                           disabled={busy || traitEditorCategory?.enabled === false}
-                          onChange={(event) => updateCategoryNoneWeight(traitEditorCategoryIndex, event.target.value)}
+                          aria-label={`No trait chance for ${traitEditorCategory?.name || 'folder'}`}
+                          onCommit={(value) => updateCategoryNoneWeight(traitEditorCategoryIndex, value)}
                         />
                         <span>%</span>
                       </div>
@@ -2814,15 +2832,15 @@ function App() {
                           </button>
                         </div>
                         <div className="input-with-suffix">
-                          <input
+                          <CommittedDecimalInput
+                            key={`trait-weight-${getTraitId(traitEditorTrait)}`}
                             id="selected-trait-chance-input"
-                            type="number"
                             min="0"
                             max="100"
-                            step="0.1"
                             value={traitEditorTrait.weight ?? 1}
                             disabled={busy || traitEditorCategory.enabled === false}
-                            onChange={(event) => updateTraitWeight(traitEditorCategoryIndex, traitEditorTraitIndex, event.target.value)}
+                            aria-label={`Chance setting for ${getTraitMetadataName(traitEditorTrait)}`}
+                            onCommit={(value) => updateTraitWeight(traitEditorCategoryIndex, traitEditorTraitIndex, value)}
                           />
                           <span>%</span>
                         </div>
@@ -3412,6 +3430,45 @@ function writeStoredValue(key, value) {
   }
 }
 
+function CommittedDecimalInput({ value, min = 0, max = 100, onCommit, ...inputProps }) {
+  const [draft, setDraft] = useState(String(value ?? ''))
+
+  useEffect(() => {
+    setDraft(String(value ?? ''))
+  }, [value])
+
+  function commit() {
+    const parsed = Number(draft)
+    if (draft.trim() === '' || !Number.isFinite(parsed)) {
+      setDraft(String(value ?? ''))
+      return
+    }
+    const nextValue = clampDecimal(parsed, Number(min), Number(max))
+    setDraft(String(nextValue))
+    if (nextValue !== Number(value)) onCommit(nextValue)
+  }
+
+  return (
+    <input
+      {...inputProps}
+      type="number"
+      min={min}
+      max={max}
+      step="any"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+        if (event.key === 'Escape') {
+          setDraft(String(value ?? ''))
+          event.currentTarget.blur()
+        }
+      }}
+    />
+  )
+}
+
 async function buildSampleCollage(previews, projectName, background = '#ffffff') {
   if (!previews.length) throw new Error('No preview images are available for the collage.')
   const canvas = document.createElement('canvas')
@@ -3681,7 +3738,7 @@ function restoreProjectBackup(source, backup) {
   }
 
   const unusedCategories = new Set(source.categories)
-  const restoredCategories = []
+  const restoredCategoryByCurrentCategory = new Map()
   const restoredIdByBackupId = new Map()
 
   for (const backupCategory of backup.source.categories) {
@@ -3726,7 +3783,7 @@ function restoreProjectBackup(source, backup) {
       extraTraits.has(trait) ? { ...trait, category: backupCategory.name } : restoredTraitByCurrentTrait.get(trait),
     )
 
-    restoredCategories.push({
+    restoredCategoryByCurrentCategory.set(currentCategory.category, {
       ...currentCategory.category,
       name: backupCategory.name,
       enabled: backupCategory.enabled !== false,
@@ -3735,9 +3792,9 @@ function restoreProjectBackup(source, backup) {
     })
   }
 
-  if (unusedCategories.size) {
-    throw new Error('The loaded source contains groups that are not present in this backup.')
-  }
+  const restoredCategories = source.categories.map((category) =>
+    restoredCategoryByCurrentCategory.get(category) || category,
+  )
 
   const remapTraitId = (id) => restoredIdByBackupId.get(id) || id
   const incompatibilities = (backup.source.incompatibilities || []).map((rule) => ({
@@ -3779,8 +3836,7 @@ function restoreProjectBackup(source, backup) {
     project: restoredProject,
     source: restoredSource,
     traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
-    skippedTraitCount:
-      restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
+    skippedTraitCount: restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
       backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
     ruleCount: incompatibilities.length + positionRules.length,
   }
@@ -3944,7 +4000,7 @@ function collectRenderableLayers(node) {
 
 async function parseFolders(files, baseFile) {
   const imageFiles = files
-    .filter((file) => IMAGE_TYPES.includes(file.type))
+    .filter(isImageFile)
     .sort((first, second) => (first.webkitRelativePath || first.name).localeCompare(second.webkitRelativePath || second.name))
   if (!imageFiles.length) {
     throw new Error('No PNG, JPG, or WebP trait images found in the selected folder.')
