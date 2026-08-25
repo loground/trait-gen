@@ -2860,6 +2860,19 @@ button:focus-visible,
   margin-bottom: 0;
 }
 
+.ratio-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.ratio-inputs > span {
+  margin-top: 6px;
+  color: #607188;
+  font-weight: 900;
+}
+
 .rule-add {
   width: 100%;
   margin-bottom: 10px;

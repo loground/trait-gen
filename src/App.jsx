@@ -53,6 +53,14 @@ const OUTPUT_FORMATS = {
   webp: { mime: 'image/webp', extension: 'webp', label: 'WebP' },
   jpeg: { mime: 'image/jpeg', extension: 'jpg', label: 'JPEG' },
 }
+const CANVAS_FORMATS = {
+  original: { label: 'Original proportions', ratio: 0 },
+  square: { label: 'Square · 1:1', ratio: 1 },
+  portrait: { label: 'Portrait · 4:5', ratio: 4 / 5 },
+  landscape: { label: 'Landscape · 16:9', ratio: 16 / 9 },
+  story: { label: 'Story · 9:16', ratio: 9 / 16 },
+  custom: { label: 'Custom ratio', ratio: null },
+}
 const DEFAULT_PROJECT = {
   name: 'Trait Collection',
   description: 'Generated with Trait Forge',
@@ -63,6 +71,10 @@ const DEFAULT_PROJECT = {
   outputFormat: 'webp',
   quality: 0.86,
   maxDimension: 2048,
+  canvasFormat: 'original',
+  customRatioWidth: 3,
+  customRatioHeight: 2,
+  canvasFit: 'cover',
 }
 
 const emptyRuleDraft = { first: '', second: '' }
@@ -1631,7 +1643,11 @@ function App() {
 
       const previews = []
       for (let index = 0; index < combos.length; index += 1) {
-        const blob = await renderArtwork(source, combos[index], { renderMaxDimension: 420 })
+        const blob = await renderArtwork(source, combos[index], {
+          renderMaxDimension: 420,
+          canvasRatio: getProjectCanvasRatio(project),
+          canvasFit: project.canvasFit,
+        })
         const url = URL.createObjectURL(blob)
         createdUrls.push(url)
         previews.push({
@@ -1694,6 +1710,7 @@ function App() {
     const output = OUTPUT_FORMATS[project.outputFormat] || OUTPUT_FORMATS.webp
     const quality = clampNumber(project.quality * 100, 1, 100) / 100
     const maxDimension = clampNumber(project.maxDimension, 0, 12000)
+    const canvasRatio = getProjectCanvasRatio(project)
 
     setLastZipUrl((current) => {
       if (current) URL.revokeObjectURL(current)
@@ -1759,6 +1776,8 @@ function App() {
           mime: output.mime,
           quality,
           maxDimension,
+          canvasRatio,
+          canvasFit: project.canvasFit,
         })
         const imageFileName = `${edition}.${output.extension}`
         const attributes = combos[index]
@@ -1785,6 +1804,8 @@ function App() {
           mime: output.mime,
           quality,
           maxDimension,
+          canvasRatio,
+          canvasFit: project.canvasFit,
         })
         const imageFileName = `${edition}.${output.extension}`
         const oneOfOneName = getOneOfOneName(artwork)
@@ -2277,18 +2298,54 @@ function App() {
           )}
 
           <label>
-            Image size
+            Maximum image size
             <input type="number" min="0" max="12000" value={project.maxDimension} onChange={(event) => updateProject('maxDimension', event.target.value)} />
             <span className="field-hint">
-              {Number(project.maxDimension) > 0
-                ? `${Math.floor(Number(project.maxDimension)).toLocaleString()} × ${Math.floor(Number(project.maxDimension)).toLocaleString()} px`
-                : 'Original image size'}
+              {getOutputSizeHint(source, project)}
             </span>
           </label>
 
           <details className="advanced-settings">
             <summary>Advanced</summary>
             <div className="advanced-settings-content">
+              <label>
+                Canvas format
+                <select value={project.canvasFormat} onChange={(event) => updateProject('canvasFormat', event.target.value)}>
+                  {Object.entries(CANVAS_FORMATS).map(([key, format]) => (
+                    <option key={key} value={key}>{format.label}</option>
+                  ))}
+                </select>
+              </label>
+              {project.canvasFormat === 'custom' && (
+                <div className="ratio-inputs" aria-label="Custom canvas ratio">
+                  <label>
+                    Ratio width
+                    <input type="number" min="1" max="100" value={project.customRatioWidth} onChange={(event) => updateProject('customRatioWidth', event.target.value)} />
+                  </label>
+                  <span aria-hidden="true">:</span>
+                  <label>
+                    Ratio height
+                    <input type="number" min="1" max="100" value={project.customRatioHeight} onChange={(event) => updateProject('customRatioHeight', event.target.value)} />
+                  </label>
+                </div>
+              )}
+              {project.canvasFormat !== 'original' && (
+                <>
+                  <div className="segmented" aria-label="Artwork fit within canvas">
+                    <button className={project.canvasFit === 'cover' ? 'active' : ''} type="button" onClick={() => updateProject('canvasFit', 'cover')}>
+                      Fill & crop
+                    </button>
+                    <button className={project.canvasFit === 'contain' ? 'active' : ''} type="button" onClick={() => updateProject('canvasFit', 'contain')}>
+                      Fit whole image
+                    </button>
+                  </div>
+                  <span className="mode-hint">
+                    {project.canvasFit === 'contain'
+                      ? 'Keeps the whole artwork and adds transparent space when needed.'
+                      : 'Fills the canvas and crops equally from opposite edges.'}
+                  </span>
+                </>
+              )}
               <label>
                 Image URI prefix
                 <input value={project.imagePrefix} onChange={(event) => updateProject('imagePrefix', event.target.value)} />
@@ -2429,9 +2486,9 @@ function App() {
                   </p>
                 </details>
                 <details>
-                  <summary>What does Image size control?</summary>
+                  <summary>What do image size and canvas format control?</summary>
                   <p>
-                    It controls how large exported images can be. Trait Forge keeps the artwork’s shape and proportions. Enter 0 if you want to keep the original image size.
+                    Maximum image size limits the longest exported side; enter 0 to keep the source resolution. Canvas format can preserve the original proportions or create square, portrait, landscape, story, and custom-ratio images. Use Fill &amp; crop for an edge-to-edge result or Fit whole image to keep all artwork visible.
                   </p>
                 </details>
                 <details>
@@ -4114,7 +4171,7 @@ async function renderArtwork(source, traits, options = {}) {
     }
   }
 
-  const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
+  const exportCanvas = prepareCanvasForExport(canvas, options)
   try {
     return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
   } finally {
@@ -4603,7 +4660,7 @@ async function renderOneOfOneArtwork(artwork, options = {}) {
   canvas.height = image.naturalHeight
   const context = canvas.getContext('2d')
   context.drawImage(image, 0, 0)
-  const exportCanvas = resizeCanvasForExport(canvas, options.maxDimension)
+  const exportCanvas = prepareCanvasForExport(canvas, options)
   try {
     return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
   } finally {
@@ -4616,20 +4673,71 @@ async function renderOneOfOneArtwork(artwork, options = {}) {
   }
 }
 
-function resizeCanvasForExport(canvas, maxDimension = 0) {
-  const limit = Number(maxDimension) || 0
-  const longestSide = Math.max(canvas.width, canvas.height)
-  if (!limit || longestSide <= limit) return canvas
+function prepareCanvasForExport(canvas, options = {}) {
+  const limit = Number(options.maxDimension) || 0
+  const canvasRatio = Number(options.canvasRatio) || 0
+  const sourceLongestSide = Math.max(canvas.width, canvas.height)
+  const outputLongestSide = limit ? Math.min(sourceLongestSide, limit) : sourceLongestSide
 
-  const scale = limit / longestSide
-  const resized = document.createElement('canvas')
-  resized.width = Math.max(1, Math.round(canvas.width * scale))
-  resized.height = Math.max(1, Math.round(canvas.height * scale))
-  const context = resized.getContext('2d')
+  let outputWidth
+  let outputHeight
+  if (canvasRatio > 0) {
+    outputWidth = canvasRatio >= 1 ? outputLongestSide : outputLongestSide * canvasRatio
+    outputHeight = canvasRatio >= 1 ? outputLongestSide / canvasRatio : outputLongestSide
+  } else {
+    const scale = outputLongestSide / sourceLongestSide
+    outputWidth = canvas.width * scale
+    outputHeight = canvas.height * scale
+  }
+
+  const targetWidth = Math.max(1, Math.round(outputWidth))
+  const targetHeight = Math.max(1, Math.round(outputHeight))
+  if (!canvasRatio && targetWidth === canvas.width && targetHeight === canvas.height) return canvas
+
+  const prepared = document.createElement('canvas')
+  prepared.width = targetWidth
+  prepared.height = targetHeight
+  const context = prepared.getContext('2d')
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
-  context.drawImage(canvas, 0, 0, resized.width, resized.height)
-  return resized
+  if (options.mime === 'image/jpeg') {
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, targetWidth, targetHeight)
+  }
+
+  const fit = options.canvasFit === 'contain' ? 'contain' : 'cover'
+  const scale = canvasRatio
+    ? fit === 'contain'
+      ? Math.min(targetWidth / canvas.width, targetHeight / canvas.height)
+      : Math.max(targetWidth / canvas.width, targetHeight / canvas.height)
+    : targetWidth / canvas.width
+  const drawWidth = canvas.width * scale
+  const drawHeight = canvas.height * scale
+  context.drawImage(canvas, (targetWidth - drawWidth) / 2, (targetHeight - drawHeight) / 2, drawWidth, drawHeight)
+  return prepared
+}
+
+function getProjectCanvasRatio(project) {
+  const format = CANVAS_FORMATS[project.canvasFormat] || CANVAS_FORMATS.original
+  if (format.ratio !== null) return format.ratio
+  const width = clampNumber(project.customRatioWidth, 1, 100)
+  const height = clampNumber(project.customRatioHeight, 1, 100)
+  return width / height
+}
+
+function getOutputSizeHint(source, project) {
+  if (!source?.width || !source.height) return 'Load artwork to calculate output dimensions.'
+  const limit = clampNumber(project.maxDimension, 0, 12000)
+  const sourceLongestSide = Math.max(source.width, source.height)
+  const longestSide = limit ? Math.min(sourceLongestSide, limit) : sourceLongestSide
+  const ratio = getProjectCanvasRatio(project)
+  const width = ratio > 0
+    ? ratio >= 1 ? longestSide : longestSide * ratio
+    : source.width * (longestSide / sourceLongestSide)
+  const height = ratio > 0
+    ? ratio >= 1 ? longestSide / ratio : longestSide
+    : source.height * (longestSide / sourceLongestSide)
+  return `${Math.max(1, Math.round(width)).toLocaleString()} × ${Math.max(1, Math.round(height)).toLocaleString()} px${limit ? ' maximum' : ''}`
 }
 
 function canvasToBlob(canvas, mime = 'image/png', quality) {
