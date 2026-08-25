@@ -2558,9 +2558,15 @@ function App() {
                 </form>
               </details>
               {accessMessage && <p className="payment-message" aria-live="polite">{accessMessage}</p>}
-              <p className="payment-support-note">
-                In case of any problems, DM: <a href="https://x.com/nickvrnn" target="_blank" rel="noreferrer">@nickvrnn</a>
-              </p>
+              <aside className="payment-support-note" aria-label="Payment support">
+                <strong>Having trouble with your payment?</strong>
+                <span>
+                  In case of any problems, DM: <a href="https://x.com/nickvrnn" target="_blank" rel="noreferrer">@nickvrnn</a>
+                </span>
+                <a className="payment-comment-link" href="https://x.com/nickvrnn/status/2092216826596065296?s=20" target="_blank" rel="noreferrer">
+                  Leave a comment under this post
+                </a>
+              </aside>
             </div>
           </section>
         </div>

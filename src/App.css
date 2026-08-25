@@ -1127,12 +1127,25 @@ button:disabled {
 }
 
 .payment-support-note {
-  margin: 0;
-  padding-top: 4px;
-  color: #68798e;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 14px 16px;
+  color: #42566f;
+  background: #eefaf8;
+  border: 1px solid #9edbd3;
+  border-radius: 10px;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.45;
   text-align: center;
+}
+
+.payment-support-note strong {
+  color: #164e4a;
+  font-size: 14px;
+  font-weight: 900;
 }
 
 .payment-support-note a {
@@ -1140,6 +1153,21 @@ button:disabled {
   font-weight: 900;
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.payment-support-note .payment-comment-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 7px 12px;
+  color: #fff;
+  background: #0d6b67;
+  border-radius: 7px;
+  text-decoration: none;
+}
+
+.payment-support-note .payment-comment-link:hover {
+  background: #09534f;
 }
 
 .crypto-payment-steps {
