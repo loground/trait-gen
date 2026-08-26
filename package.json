@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test src/*.test.js",
     "code:create": "node scripts/create_generation_code.mjs",
     "lint": "oxlint",
     "migrate": "node scripts/migrate.mjs",

@@ -4,6 +4,11 @@ Browser-based NFT collection generator for mixing traits, assigning rarity,
 creating compatibility rules, previewing combinations, and exporting images and
 metadata as a ZIP.
 
+Artwork sources can be layered PSDs, PNG/JPEG/WebP files, or native `.procreate`
+documents. Procreate documents are read entirely in the browser and use their
+embedded Quick Look PNG as flattened artwork; export a layered PSD from Procreate
+when individual native layers must become Trait Forge folders and traits.
+
 ## Development
 
 ```bash

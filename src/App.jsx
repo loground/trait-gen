@@ -32,6 +32,7 @@ import {
 import './App.css'
 import { findCombinationViolation, findInvalidCombination } from './ruleValidation.js'
 import { buildSmartRarityProfile, isAccessoryCategory } from './smartRarities.js'
+import { extractProcreatePreview, isProcreateFile } from './procreate.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -90,7 +91,7 @@ function isLoopbackHostname(hostname = '') {
 function App() {
   const [project, setProject] = useState(DEFAULT_PROJECT)
   const [source, setSource] = useState(null)
-  const [status, setStatus] = useState('Drop in a PSD or trait folders to begin.')
+  const [status, setStatus] = useState('Drop in a PSD, Procreate file, or trait folders to begin.')
   const [busy, setBusy] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
   const [samplePreviews, setSamplePreviews] = useState([])
@@ -529,11 +530,15 @@ function App() {
     }
   }, [traitEditorOpen, source, selectedCategoryIndex, selectedTraitIndex])
 
-  async function importPsdFile(file) {
+  async function importLayeredFile(file) {
     if (!file) return
     if (!(await ensureHolderAccess())) return
-    if (!file.name.toLowerCase().endsWith('.psd') && file.type !== 'image/vnd.adobe.photoshop') {
-      setStatus('Drop a PSD file into Single PSD.')
+    if (isProcreateFile(file)) {
+      await importProcreateFile(file)
+      return
+    }
+    if (!isPsdFile(file)) {
+      setStatus('Drop a PSD or Procreate file into the layered artwork source.')
       return
     }
 
@@ -581,17 +586,51 @@ function App() {
     }
   }
 
+  async function importProcreateFile(file) {
+    setBusy(true)
+    setStatus('Opening Procreate artwork preview...')
+    try {
+      const image = await loadImageFromFile(file)
+      const parsed = {
+        type: 'folder',
+        name: file.name,
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        baseImage: image,
+        categories: [],
+        oneOfOnes: [],
+        incompatibilities: [],
+        positionRules: [],
+        categoryRequirements: [],
+        categoryConflicts: [],
+      }
+      setSource(parsed)
+      setExpandedCategoryIndices([])
+      setSelectedCategoryIndex(0)
+      setRuleDraft(emptyRuleDraft)
+      setRuleFolderDraft(emptyRuleFolderDraft)
+      setPositionRuleDraft(emptyPositionRuleDraft)
+      setPositionRuleFolderDraft(emptyRuleFolderDraft)
+      setStatus(`Loaded the flattened preview from ${file.name}. Add a folder, then upload traits; export a PSD from Procreate to import editable layers.`)
+      await renderPreview(parsed)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not read that Procreate file.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handlePsdUpload(event) {
     const file = event.target.files?.[0]
-    await importPsdFile(file)
+    await importLayeredFile(file)
     event.target.value = ''
   }
 
   async function selectBaseFile(file) {
     if (!file) return
     if (!(await ensureHolderAccess())) return
-    if (!isImageFile(file)) {
-      setStatus('Drop a PNG, JPG, or WebP image into Base image.')
+    if (!isArtworkFile(file)) {
+      setStatus('Drop a PNG, JPG, WebP, or Procreate file into Base image.')
       return
     }
 
@@ -628,15 +667,15 @@ function App() {
       setStatus('No file was found in that drop.')
       return
     }
-    if (target === 'psd') await importPsdFile(file)
+    if (target === 'psd') await importLayeredFile(file)
     if (target === 'base') await selectBaseFile(file)
     if (target === 'preview') {
-      if (file.name.toLowerCase().endsWith('.psd') || file.type === 'image/vnd.adobe.photoshop') {
-        await importPsdFile(file)
-      } else if (isImageFile(file)) {
+      if (isPsdFile(file) || isProcreateFile(file)) {
+        await importLayeredFile(file)
+      } else if (isArtworkFile(file)) {
         await selectBaseFile(file)
       } else {
-        setStatus('Drop a PSD, PNG, JPG, or WebP file into the preview area.')
+        setStatus('Drop a PSD, Procreate, PNG, JPG, or WebP file into the preview area.')
       }
     }
   }
@@ -676,9 +715,9 @@ function App() {
       return
     }
     if (!(await ensureHolderAccess())) return
-    const imageFiles = Array.from(files || []).filter(isImageFile)
+    const imageFiles = Array.from(files || []).filter(isArtworkFile)
     if (!imageFiles.length) {
-      setStatus('No PNG, JPG, or WebP 1/1 artworks were found.')
+      setStatus('No PNG, JPG, WebP, or Procreate 1/1 artworks were found.')
       return
     }
 
@@ -760,9 +799,9 @@ function App() {
     if (!files.length || !source || categoryIndex === null || !source.categories[categoryIndex]) return
     if (!(await ensureHolderAccess())) return
 
-    const imageFiles = Array.from(files).filter(isImageFile)
+    const imageFiles = Array.from(files).filter(isArtworkFile)
     if (!imageFiles.length) {
-      setStatus('Choose PNG, JPG, or WebP trait images.')
+      setStatus('Choose PNG, JPG, WebP, or Procreate trait artwork.')
       return
     }
 
@@ -2008,8 +2047,8 @@ function App() {
           >
             <Layers3 size={22} />
             <span>
-              <strong>Single PSD</strong>
-              <small>Drop a PSD here, or click to browse.</small>
+              <strong>PSD / Procreate</strong>
+              <small>Layered PSD or flattened Procreate preview.</small>
             </span>
           </button>
           <div className="split-row">
@@ -2077,13 +2116,13 @@ function App() {
             <Archive size={18} />
             Restore project backup
           </button>
-          <p className="chance-note">Load the matching PSD or trait folder first, then restore its JSON backup.</p>
+          <p className="chance-note">Load the matching PSD, Procreate artwork, or trait folder first, then restore its JSON backup.</p>
 
-          <input ref={psdInputRef} className="hidden" type="file" accept=".psd,image/vnd.adobe.photoshop" onChange={handlePsdUpload} />
-          <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBaseUpload} />
+          <input ref={psdInputRef} className="hidden" type="file" accept=".psd,.procreate,image/vnd.adobe.photoshop,application/x-procreate" onChange={handlePsdUpload} />
+          <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,.procreate,application/x-procreate" onChange={handleBaseUpload} />
           <input ref={folderInputRef} className="hidden" type="file" webkitdirectory="true" directory="" multiple onChange={handleFolderUpload} />
-          <input ref={oneOfOneInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" webkitdirectory="true" directory="" multiple onChange={handleOneOfOneUpload} />
-          <input ref={traitFilesInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleTraitFilesUpload} />
+          <input ref={oneOfOneInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,.procreate,application/x-procreate" webkitdirectory="true" directory="" multiple onChange={handleOneOfOneUpload} />
+          <input ref={traitFilesInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,.procreate,application/x-procreate" multiple onChange={handleTraitFilesUpload} />
 
           <div className="trait-list">
             <div className="list-header">
@@ -2191,7 +2230,7 @@ function App() {
                 </div>
               ))
             ) : (
-              <p className="empty-state">Upload one layered PSD, or choose a base image and one directory containing trait folders.</p>
+              <p className="empty-state">Upload one layered PSD or Procreate artwork, or choose a base image and one directory containing trait folders.</p>
             )}
           </div>
 
@@ -2253,8 +2292,8 @@ function App() {
           ) : (
             <div className="preview-empty">
               <Upload size={36} />
-              <span>Drop a PSD or base image here.</span>
-              <small>PNG, JPG, and WebP are supported.</small>
+              <span>Drop a PSD, Procreate file, or base image here.</span>
+              <small>PNG, JPG, WebP, and Procreate are supported.</small>
             </div>
           )}
         </section>
@@ -4063,10 +4102,10 @@ function collectRenderableLayers(node) {
 
 async function parseFolders(files, baseFile) {
   const imageFiles = files
-    .filter(isImageFile)
+    .filter(isArtworkFile)
     .sort((first, second) => (first.webkitRelativePath || first.name).localeCompare(second.webkitRelativePath || second.name))
   if (!imageFiles.length) {
-    throw new Error('No PNG, JPG, or WebP trait images found in the selected folder.')
+    throw new Error('No PNG, JPG, WebP, or Procreate trait artwork found in the selected folder.')
   }
 
   const stripped = stripCommonRoot(imageFiles)
@@ -4599,10 +4638,11 @@ function mulberry32(seed) {
   }
 }
 
-function loadImageFromFile(file) {
+async function loadImageFromFile(file) {
+  const imageBlob = isProcreateFile(file) ? await extractProcreatePreview(file) : file
   return new Promise((resolve, reject) => {
     const image = new Image()
-    const url = URL.createObjectURL(file)
+    const url = URL.createObjectURL(imageBlob)
     image.onload = () => {
       URL.revokeObjectURL(url)
       resolve(image)
@@ -4617,6 +4657,14 @@ function loadImageFromFile(file) {
 
 function isImageFile(file) {
   return IMAGE_TYPES.includes(file?.type) || /\.(png|jpe?g|webp)$/i.test(file?.name || '')
+}
+
+function isArtworkFile(file) {
+  return isImageFile(file) || isProcreateFile(file)
+}
+
+function isPsdFile(file) {
+  return file?.type === 'image/vnd.adobe.photoshop' || /\.psd$/i.test(file?.name || '')
 }
 
 async function collectDroppedFiles(dataTransfer) {
