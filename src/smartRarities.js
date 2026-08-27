@@ -1,7 +1,12 @@
 const ACCESSORY_CATEGORY = /^(accessory|accessories|accesory|accesories)\b/i
+const FACE_CATEGORY = /^faces?\b/i
 
 export function isAccessoryCategory(categoryName) {
   return ACCESSORY_CATEGORY.test(String(categoryName || '').trim())
+}
+
+export function isFaceCategory(categoryName) {
+  return FACE_CATEGORY.test(String(categoryName || '').trim())
 }
 
 /**
@@ -18,6 +23,19 @@ export function buildSmartRarityProfile(categories, options = {}) {
 
   const profiledCategories = categories.map((category, categoryIndex) => {
     if (category.enabled === false || !category.traits.length) return category
+
+    if (category.selectionMode === 'ordered' || isFaceCategory(category.name)) {
+      const weights = distributeEvenChances(category.traits.length, 100)
+      return {
+        ...category,
+        selectionMode: 'ordered',
+        noneWeight: 0,
+        traits: category.traits.map((trait, traitIndex) => ({
+          ...trait,
+          weight: weights[traitIndex],
+        })),
+      }
+    }
 
     const noTraitChance = zeroNoneCategoryIndexes
       ? zeroNoneCategoryIndexes.has(categoryIndex) ? 0 : getRecommendedOptionalNoTraitChance(category.traits.length)
@@ -42,6 +60,7 @@ export function buildSmartRarityProfile(categories, options = {}) {
 
   const activeCategories = profiledCategories.filter((category) => category.enabled !== false && category.traits.length)
   const optionalCategories = activeCategories.filter((category) => Number(category.noneWeight) > 0)
+  const balancedFaceCategories = activeCategories.filter((category) => isFaceCategory(category.name))
   const traitWeights = activeCategories.flatMap((category) => category.traits.map((trait) => Number(trait.weight) || 0))
   const lowestExpectedCount = traitWeights.length
     ? Math.max(1, Math.round((Math.min(...traitWeights) / 100) * targetCount))
@@ -52,11 +71,20 @@ export function buildSmartRarityProfile(categories, options = {}) {
     summary: {
       targetCount,
       optionalCategoryCount: optionalCategories.length,
+      balancedFaceCategoryCount: balancedFaceCategories.length,
       activeCategoryCount: activeCategories.length,
       rareTraitCount: traitWeights.filter((weight) => weight > 0 && weight <= 1).length,
       lowestExpectedCount,
     },
   }
+}
+
+function distributeEvenChances(traitCount, budget) {
+  if (!traitCount) return []
+  const budgetUnits = Math.round(budget * 10)
+  const baseUnits = Math.floor(budgetUnits / traitCount)
+  const extraUnits = budgetUnits - baseUnits * traitCount
+  return Array.from({ length: traitCount }, (_, index) => (baseUnits + (index < extraUnits ? 1 : 0)) / 10)
 }
 
 export function getRecommendedNoTraitChance(categoryName, traitCount = 0) {

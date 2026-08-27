@@ -31,7 +31,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { findCombinationViolation, findInvalidCombination } from './ruleValidation.js'
-import { buildSmartRarityProfile, isAccessoryCategory } from './smartRarities.js'
+import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './smartRarities.js'
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
@@ -80,7 +80,16 @@ const DEFAULT_PROJECT = {
 
 const emptyRuleDraft = { first: '', second: '' }
 const emptyRuleFolderDraft = { first: '', second: '' }
-const emptyPositionRuleDraft = { first: '', second: '', firstX: 0, firstY: 0, secondX: 0, secondY: 0 }
+const emptyPositionRuleDraft = {
+  first: '',
+  second: '',
+  firstX: 0,
+  firstY: 0,
+  firstScale: 100,
+  secondX: 0,
+  secondY: 0,
+  secondScale: 100,
+}
 const emptyConditionDraft = { categories: [], requiredTrait: '' }
 const emptyFolderConflictDraft = { first: [], second: [] }
 
@@ -1004,6 +1013,30 @@ function App() {
     schedulePreview(nextSource)
   }
 
+  function updateCategorySelectionMode(categoryIndex, selectionMode) {
+    if (!source || busy || !['weighted', 'ordered'].includes(selectionMode)) return
+    const categories = source.categories.map((category, index) => {
+      if (index !== categoryIndex) return category
+      if (selectionMode === 'ordered') {
+        return {
+          ...category,
+          selectionMode,
+          noneWeight: 0,
+          traits: category.traits.map((trait) => ({ ...trait, weight: 1 })),
+        }
+      }
+      return { ...category, selectionMode }
+    })
+    const nextSource = { ...source, categories }
+    setSource(nextSource)
+    setStatus(
+      selectionMode === 'ordered'
+        ? `${categories[categoryIndex].name} will cycle from the first trait to the last, then repeat.`
+        : `${categories[categoryIndex].name} will use weighted rarity mixing.`,
+    )
+    schedulePreview(nextSource)
+  }
+
   function openRarityPlanner() {
     if (!source || busy) return
     const sourceKey = source.categories.map((category, index) => `${index}:${category.name}:${category.traits.length}`).join('|')
@@ -1052,7 +1085,7 @@ function App() {
     setProject((current) => ({ ...current, count: targetCount, mode: 'random' }))
     setRarityPlanner((current) => ({ ...current, open: false, supply: String(targetCount) }))
     setStatus(
-      `Smart rarity plan for ${targetCount.toLocaleString()} editions: ${profile.summary.optionalCategoryCount} optional folders, ${profile.summary.rareTraitCount} ultra-rare traits, about ${profile.summary.lowestExpectedCount} copies of the rarest trait, and ${capacity} valid combinations.${duplicateWarning}`,
+      `Smart rarity plan for ${targetCount.toLocaleString()} editions: ${profile.summary.balancedFaceCategoryCount} face folder${profile.summary.balancedFaceCategoryCount === 1 ? '' : 's'} balanced evenly, ${profile.summary.optionalCategoryCount} optional folders, ${profile.summary.rareTraitCount} ultra-rare traits, about ${profile.summary.lowestExpectedCount} copies of the rarest trait, and ${capacity} valid combinations.${duplicateWarning}`,
     )
     await renderPreview(nextSource)
   }
@@ -1315,7 +1348,39 @@ function App() {
       [side]: traitKey,
       [`${side}X`]: trait ? getTraitOffset(trait, 'x') : 0,
       [`${side}Y`]: trait ? getTraitOffset(trait, 'y') : 0,
+      [`${side}Scale`]: 100,
     }))
+  }
+
+  function selectPositionRuleFolder(side, folderIndex) {
+    const nextFolders = { ...positionRuleFolderDraft, [side]: folderIndex }
+    setPositionRuleFolderDraft(nextFolders)
+    if (nextFolders.first !== '' && nextFolders.second !== '') {
+      const firstOptions = traitOptionsByCategory[Number(nextFolders.first)] || []
+      const secondOptions = traitOptionsByCategory[Number(nextFolders.second)] || []
+      const existingKeys = new Set((source?.positionRules || []).map(makeRuleKey))
+      const firstPair = firstOptions
+        .flatMap((firstOption) => secondOptions.map((secondOption) => ({ firstOption, secondOption })))
+        .find(({ firstOption, secondOption }) => !existingKeys.has(makeRuleKey({ first: firstOption.key, second: secondOption.key })))
+      if (firstPair) {
+        const firstTrait = findTraitByKey(source, firstPair.firstOption.key)
+        const secondTrait = findTraitByKey(source, firstPair.secondOption.key)
+        setPositionRuleDraft({
+          first: firstPair.firstOption.key,
+          firstX: getTraitOffset(firstTrait, 'x'),
+          firstY: getTraitOffset(firstTrait, 'y'),
+          firstScale: 100,
+          second: firstPair.secondOption.key,
+          secondX: getTraitOffset(secondTrait, 'x'),
+          secondY: getTraitOffset(secondTrait, 'y'),
+          secondScale: 100,
+        })
+        setActivePositionTraitSide('second')
+        return
+      }
+    }
+    const firstOption = folderIndex === '' ? null : traitOptionsByCategory[Number(folderIndex)]?.[0]
+    selectPositionRuleTrait(side, firstOption?.key || '')
   }
 
   function updatePositionRuleOffset(side, axis, value) {
@@ -1330,6 +1395,13 @@ function App() {
     const limit = Math.max(source.width, source.height) * 2
     const offset = Math.round(Math.max(-limit, Math.min(limit, numericValue)))
     setPositionRuleDraft((current) => ({ ...current, [`${side}${axis.toUpperCase()}`]: offset }))
+  }
+
+  function updatePositionRuleScale(side, value) {
+    if (!source || busy) return
+    const rawValue = String(value)
+    if (!/^\d{0,3}$/.test(rawValue)) return
+    setPositionRuleDraft((current) => ({ ...current, [`${side}Scale`]: rawValue }))
   }
 
   function handlePositionCanvasPointerDown(event) {
@@ -1367,7 +1439,7 @@ function App() {
     event.currentTarget.releasePointerCapture?.(event.pointerId)
   }
 
-  async function addPositionRule() {
+  async function addPositionRule(advancePair = false) {
     if (!source || busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second) return
     const firstTrait = findTraitByKey(source, positionRuleDraft.first)
     const secondTrait = findTraitByKey(source, positionRuleDraft.second)
@@ -1380,8 +1452,10 @@ function App() {
       second: positionRuleDraft.second,
       firstOffsetX: Number(positionRuleDraft.firstX) || 0,
       firstOffsetY: Number(positionRuleDraft.firstY) || 0,
+      firstScale: normalizeRuleScale(positionRuleDraft.firstScale),
       secondOffsetX: Number(positionRuleDraft.secondX) || 0,
       secondOffsetY: Number(positionRuleDraft.secondY) || 0,
+      secondScale: normalizeRuleScale(positionRuleDraft.secondScale),
     }
     if (rule.first.localeCompare(rule.second) > 0) {
       rule = {
@@ -1389,8 +1463,10 @@ function App() {
         second: rule.first,
         firstOffsetX: rule.secondOffsetX,
         firstOffsetY: rule.secondOffsetY,
+        firstScale: rule.secondScale,
         secondOffsetX: rule.firstOffsetX,
         secondOffsetY: rule.firstOffsetY,
+        secondScale: rule.firstScale,
       }
     }
     const existingRules = source.positionRules || []
@@ -1400,9 +1476,39 @@ function App() {
     }
     const nextSource = { ...source, positionRules: [...existingRules, rule] }
     setSource(nextSource)
-    setPositionRuleDraft(emptyPositionRuleDraft)
-    setPositionRuleFolderDraft(emptyRuleFolderDraft)
-    setStatus('Pair-specific position rule added.')
+    if (advancePair && positionRuleFolderDraft.first !== '' && positionRuleFolderDraft.second !== '') {
+      const firstOptions = traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []
+      const secondOptions = traitOptionsByCategory[Number(positionRuleFolderDraft.second)] || []
+      const pairs = firstOptions.flatMap((firstOption) => secondOptions.map((secondOption) => ({ firstOption, secondOption })))
+      const currentIndex = pairs.findIndex(({ firstOption, secondOption }) => (
+        firstOption.key === positionRuleDraft.first && secondOption.key === positionRuleDraft.second
+      ))
+      const existingKeys = new Set(nextSource.positionRules.map(makeRuleKey))
+      const nextPair = pairs.slice(currentIndex + 1).find(({ firstOption, secondOption }) => (
+        !existingKeys.has(makeRuleKey({ first: firstOption.key, second: secondOption.key }))
+      ))
+      const nextFirstTrait = nextPair ? findTraitByKey(source, nextPair.firstOption.key) : null
+      const nextSecondTrait = nextPair ? findTraitByKey(source, nextPair.secondOption.key) : null
+      if (nextFirstTrait && nextSecondTrait) {
+        setPositionRuleDraft((current) => ({
+          ...current,
+          first: nextPair.firstOption.key,
+          firstX: getTraitOffset(nextFirstTrait, 'x'),
+          firstY: getTraitOffset(nextFirstTrait, 'y'),
+          firstScale: 100,
+          second: nextPair.secondOption.key,
+          secondX: getTraitOffset(nextSecondTrait, 'x'),
+          secondY: getTraitOffset(nextSecondTrait, 'y'),
+          secondScale: 100,
+        }))
+        setActivePositionTraitSide('second')
+        setStatus('Position rule saved. Advanced to the next unconfigured pair.')
+      } else {
+        setStatus('Position rule saved. Every pair in these folders is now configured.')
+      }
+    } else {
+      setStatus('Pair-specific position rule added. Selections kept so you can quickly create another.')
+    }
     await renderPreview(nextSource)
   }
 
@@ -1675,7 +1781,7 @@ function App() {
     setStatus(`Rendering ${sampleCount} sample artworks...`)
     const createdUrls = []
     try {
-      const combos = project.mode === 'all'
+      const combos = project.mode === 'all' && !hasOrderedCategories(activeCategories)
         ? buildCombinationsUpTo(activeCategories, rules, sampleCount)
         : buildUniqueRandomCombinations(activeCategories, sampleCount, project.seed, rules)
       if (!combos.length) throw new Error('No valid sample combinations could be selected.')
@@ -1769,7 +1875,7 @@ function App() {
       const metadataRows = []
       const manifest = []
       const combos =
-        project.mode === 'all'
+        project.mode === 'all' && !hasOrderedCategories(activeCategories)
           ? buildCombinationsUpTo(activeCategories, rules, targetCount)
           : buildUniqueRandomCombinations(activeCategories, targetCount, project.seed, rules)
 
@@ -2003,6 +2109,13 @@ function App() {
   const totalTraitCount = source?.categories?.reduce((total, category) => total + category.traits.length, 0) || 0
   const positionFirstTrait = source ? findTraitByKey(source, positionRuleDraft.first) : null
   const positionSecondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
+  const positionFirstOptions = positionRuleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []
+  const positionSecondOptions = positionRuleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.second)] || []
+  const positionPairTotal = positionFirstOptions.length * positionSecondOptions.length
+  const positionPairNumber = positionRuleDraft.first && positionRuleDraft.second
+    ? positionFirstOptions.findIndex((option) => option.key === positionRuleDraft.first) * positionSecondOptions.length +
+      positionSecondOptions.findIndex((option) => option.key === positionRuleDraft.second) + 1
+    : 0
 
   function getPositionCanvasTransform(side, trait) {
     if (!source || !trait) return 'none'
@@ -2010,7 +2123,8 @@ function App() {
     const offsetY = Number(positionRuleDraft[`${side}Y`]) || 0
     const deltaX = offsetX - getTraitOffset(trait, 'x')
     const deltaY = offsetY - getTraitOffset(trait, 'y')
-    return `translate(${(deltaX / source.width) * 100}%, ${(deltaY / source.height) * 100}%)`
+    const scale = normalizeRuleScale(positionRuleDraft[`${side}Scale`]) / 100
+    return `translate(${(deltaX / source.width) * 100}%, ${(deltaY / source.height) * 100}%) scale(${scale})`
   }
 
   return (
@@ -2404,7 +2518,11 @@ function App() {
                 </button>
               </div>
               <span className="mode-hint">
-                {project.mode === 'random' ? 'Uses the seed to pick unique combinations.' : 'Walks through every possible combination until Editions is reached.'}
+                {source && hasOrderedCategories(source.categories)
+                  ? 'Folders set to “In order” always keep their sequence; other folders follow this generation mode.'
+                  : project.mode === 'random'
+                    ? 'Uses the seed to pick unique combinations.'
+                    : 'Walks through every possible combination until Editions is reached.'}
               </span>
             </div>
           </details>
@@ -2803,6 +2921,22 @@ function App() {
                     </div>
                   </div>
                   <div className="selected-folder-controls">
+                    <label className="folder-selection-mode">
+                      Distribution
+                      <select
+                        value={getCategorySelectionMode(traitEditorCategory)}
+                        disabled={busy || traitEditorCategory?.enabled === false}
+                        onChange={(event) => updateCategorySelectionMode(traitEditorCategoryIndex, event.target.value)}
+                      >
+                        <option value="weighted">Weighted mix</option>
+                        <option value="ordered">In order · 1 → last</option>
+                      </select>
+                      <small>
+                        {getCategorySelectionMode(traitEditorCategory) === 'ordered'
+                          ? 'Every trait appears once in folder order before the sequence repeats.'
+                          : 'Traits mix according to their individual chance settings.'}
+                      </small>
+                    </label>
                     <div className="folder-none-chance">
                       <div className="chance-label-row">
                         <label htmlFor="folder-none-chance-input">No trait chance</label>
@@ -2823,7 +2957,7 @@ function App() {
                           min="0"
                           max="100"
                           value={getCategoryNoneWeight(traitEditorCategory)}
-                          disabled={busy || traitEditorCategory?.enabled === false}
+                          disabled={busy || traitEditorCategory?.enabled === false || getCategorySelectionMode(traitEditorCategory) === 'ordered'}
                           aria-label={`No trait chance for ${traitEditorCategory?.name || 'folder'}`}
                           onCommit={(value) => updateCategoryNoneWeight(traitEditorCategoryIndex, value)}
                         />
@@ -2842,7 +2976,12 @@ function App() {
                       onClick={() => setSelectedTraitIndex(traitIndex)}
                     >
                       <span>{getTraitMetadataName(trait)}</span>
-                      <small>Estimated chance {formatChance(getNormalizedTraitChance(traitEditorCategory, trait))} · Position X {getTraitOffset(trait, 'x')} · Y {getTraitOffset(trait, 'y')}</small>
+                      <small>
+                        {getCategorySelectionMode(traitEditorCategory) === 'ordered'
+                          ? `Sequence #${traitIndex + 1}`
+                          : `Estimated chance ${formatChance(getNormalizedTraitChance(traitEditorCategory, trait))}`}
+                        {' · '}Position X {getTraitOffset(trait, 'x')} · Y {getTraitOffset(trait, 'y')}
+                      </small>
                     </button>
                   ))}
                 </div>
@@ -2940,13 +3079,17 @@ function App() {
                             min="0"
                             max="100"
                             value={traitEditorTrait.weight ?? 1}
-                            disabled={busy || traitEditorCategory.enabled === false}
+                            disabled={busy || traitEditorCategory.enabled === false || getCategorySelectionMode(traitEditorCategory) === 'ordered'}
                             aria-label={`Chance setting for ${getTraitMetadataName(traitEditorTrait)}`}
                             onCommit={(value) => updateTraitWeight(traitEditorCategoryIndex, traitEditorTraitIndex, value)}
                           />
                           <span>%</span>
                         </div>
-                        <small>Estimated chance: {formatChance(traitEditorTraitChance)}</small>
+                        <small>
+                          {getCategorySelectionMode(traitEditorCategory) === 'ordered'
+                            ? `Sequence position ${traitEditorTraitIndex + 1} of ${traitEditorCategory.traits.length}`
+                            : `Estimated chance: ${formatChance(traitEditorTraitChance)}`}
+                        </small>
                       </div>
                       <div className="trait-inspector-position">
                         <div className="position-title">
@@ -3222,17 +3365,14 @@ function App() {
                   </span>
                   <strong>{positionRules.length}</strong>
                 </div>
-                <p>Use special X/Y positions only when two selected traits appear together.</p>
+                <p>Choose two folders once. The first pair is selected automatically, and Save &amp; continue walks through every pair for you.</p>
                 <div className="trait-picker-field">
                   <label>
                     First folder
                     <select
                       value={positionRuleFolderDraft.first}
                       disabled={busy}
-                      onChange={(event) => {
-                        setPositionRuleFolderDraft((current) => ({ ...current, first: event.target.value }))
-                        selectPositionRuleTrait('first', '')
-                      }}
+                      onChange={(event) => selectPositionRuleFolder('first', event.target.value)}
                     >
                       <option value="">Choose folder</option>
                       {source.categories.map((category, categoryIndex) => (
@@ -3241,7 +3381,7 @@ function App() {
                     </select>
                   </label>
                   <label>
-                    First trait
+                    First trait <small className="optional-field-note">Optional jump</small>
                     <select
                       value={positionRuleDraft.first}
                       disabled={busy || positionRuleFolderDraft.first === ''}
@@ -3259,7 +3399,9 @@ function App() {
                     label={traitOptionMap.get(positionRuleDraft.first)}
                     offsetX={positionRuleDraft.firstX}
                     offsetY={positionRuleDraft.firstY}
+                    scale={positionRuleDraft.firstScale}
                     onChange={(axis, value) => updatePositionRuleOffset('first', axis, value)}
+                    onScaleChange={(value) => updatePositionRuleScale('first', value)}
                   />
                 </div>
                 <div className="trait-picker-field">
@@ -3268,10 +3410,7 @@ function App() {
                     <select
                       value={positionRuleFolderDraft.second}
                       disabled={busy}
-                      onChange={(event) => {
-                        setPositionRuleFolderDraft((current) => ({ ...current, second: event.target.value }))
-                        selectPositionRuleTrait('second', '')
-                      }}
+                      onChange={(event) => selectPositionRuleFolder('second', event.target.value)}
                     >
                       <option value="">Choose folder</option>
                       {source.categories.map((category, categoryIndex) => (
@@ -3280,7 +3419,7 @@ function App() {
                     </select>
                   </label>
                   <label>
-                    Second trait
+                    Second trait <small className="optional-field-note">Optional jump</small>
                     <select
                       value={positionRuleDraft.second}
                       disabled={busy || positionRuleFolderDraft.second === ''}
@@ -3298,14 +3437,16 @@ function App() {
                     label={traitOptionMap.get(positionRuleDraft.second)}
                     offsetX={positionRuleDraft.secondX}
                     offsetY={positionRuleDraft.secondY}
+                    scale={positionRuleDraft.secondScale}
                     onChange={(axis, value) => updatePositionRuleOffset('second', axis, value)}
+                    onScaleChange={(value) => updatePositionRuleScale('second', value)}
                   />
                 </div>
                 {positionRuleDraft.first && positionRuleDraft.second && (
                   <div className="pair-position-preview interactive-position-preview">
                     <div className="pair-position-preview-header">
-                      <span>Drag to position both traits</span>
-                      <small>Select a trait, then drag it in the canvas</small>
+                      <span>Pair {Math.max(1, positionPairNumber)} of {positionPairTotal}</span>
+                      <small>Click a trait below, then drag it in the canvas</small>
                     </div>
                     <div className="position-preview-trait-tabs" role="group" aria-label="Trait to reposition">
                       <button
@@ -3315,7 +3456,7 @@ function App() {
                       >
                         <span>First trait</span>
                         <strong>{traitOptionMap.get(positionRuleDraft.first)?.split(' / ').at(-1)}</strong>
-                        <small>X {Number(positionRuleDraft.firstX) || 0} · Y {Number(positionRuleDraft.firstY) || 0}</small>
+                        <small>X {Number(positionRuleDraft.firstX) || 0} · Y {Number(positionRuleDraft.firstY) || 0} · {normalizeRuleScale(positionRuleDraft.firstScale)}%</small>
                       </button>
                       <button
                         className={activePositionTraitSide === 'second' ? 'active' : ''}
@@ -3324,7 +3465,7 @@ function App() {
                       >
                         <span>Second trait</span>
                         <strong>{traitOptionMap.get(positionRuleDraft.second)?.split(' / ').at(-1)}</strong>
-                        <small>X {Number(positionRuleDraft.secondX) || 0} · Y {Number(positionRuleDraft.secondY) || 0}</small>
+                        <small>X {Number(positionRuleDraft.secondX) || 0} · Y {Number(positionRuleDraft.secondY) || 0} · {normalizeRuleScale(positionRuleDraft.secondScale)}%</small>
                       </button>
                     </div>
                     <div
@@ -3360,15 +3501,27 @@ function App() {
                     </div>
                   </div>
                 )}
-                <button
-                  className="rule-add"
-                  type="button"
-                  disabled={busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second}
-                  onClick={addPositionRule}
-                >
-                  <SlidersHorizontal size={16} />
-                  Add position rule
-                </button>
+                <div className="position-rule-actions">
+                  <button
+                    className="rule-add"
+                    type="button"
+                    disabled={busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second}
+                    onClick={() => addPositionRule(true)}
+                  >
+                    <ArrowDown size={16} />
+                    Save &amp; continue
+                  </button>
+                  <button
+                    className="rule-add"
+                    type="button"
+                    disabled={busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second}
+                    onClick={() => addPositionRule()}
+                    title="Save this pair without advancing"
+                  >
+                    <SlidersHorizontal size={16} />
+                    Save only
+                  </button>
+                </div>
                 {positionRules.length ? (
                   <div className="rule-list">
                     {positionRules.map((rule, index) => (
@@ -3715,7 +3868,7 @@ function OneOfOneThumbnail({ artwork }) {
   return <canvas ref={canvasRef} width="76" height="76" aria-hidden="true" />
 }
 
-function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange }) {
+function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, scale, onChange, onScaleChange }) {
   if (!traitKey) return <div className="trait-position-controls empty">Select a trait to set its pair position.</div>
   const traitName = label?.split(' / ').at(-1) || 'trait'
   return (
@@ -3748,6 +3901,24 @@ function PairPositionDraftControls({ traitKey, label, offsetX, offsetY, onChange
           }}
         />
       </span>
+      <div className="scale-control">
+        <small>Size</small>
+        <div className="input-with-suffix compact-suffix">
+          <input
+            type="number"
+            min="10"
+            max="300"
+            step="1"
+            value={scale}
+            aria-label={`Pair-specific scale for ${traitName}`}
+            onChange={(event) => onScaleChange(event.target.value)}
+            onBlur={(event) => {
+              onScaleChange(String(normalizeRuleScale(event.target.value || 100)))
+            }}
+          />
+          <b>%</b>
+        </div>
+      </div>
     </div>
   )
 }
@@ -3801,6 +3972,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
         categoryIndex,
         name: category.name,
         enabled: category.enabled !== false,
+        selectionMode: getCategorySelectionMode(category),
         noneWeight: getCategoryNoneWeight(category),
         traits: category.traits.map((trait, traitIndex) => ({
           traitIndex,
@@ -3889,6 +4061,7 @@ function restoreProjectBackup(source, backup) {
       ...currentCategory.category,
       name: backupCategory.name,
       enabled: backupCategory.enabled !== false,
+      selectionMode: getCategorySelectionMode(backupCategory),
       noneWeight: clampDecimal(backupCategory.noneWeight, 0, 100),
       traits: mergedTraits,
     })
@@ -3908,8 +4081,10 @@ function restoreProjectBackup(source, backup) {
     second: remapTraitId(rule.second),
     firstOffsetX: Math.round(Number(rule.firstOffsetX) || 0),
     firstOffsetY: Math.round(Number(rule.firstOffsetY) || 0),
+    firstScale: normalizeRuleScale(rule.firstScale),
     secondOffsetX: Math.round(Number(rule.secondOffsetX) || 0),
     secondOffsetY: Math.round(Number(rule.secondOffsetY) || 0),
+    secondScale: normalizeRuleScale(rule.secondScale),
   }))
   const restoredSource = {
     ...source,
@@ -4192,21 +4367,15 @@ async function renderArtwork(source, traits, options = {}) {
     }
     for (const trait of traits) {
       if (trait.isNone) continue
-      const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
-      if (trait.type === 'image') {
-        context.drawImage(trait.image, position.x, position.y, source.width, source.height)
-      } else {
-        for (const layer of trait.layers) {
-          drawPsdLayer(context, layer, position.x, position.y)
-        }
-      }
+      const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y'), scale: 1 }
+      drawTraitArtwork(context, trait, position, source)
     }
   } else {
     if (includeBase && source.baseImage) context.drawImage(source.baseImage, 0, 0, source.width, source.height)
     for (const trait of traits) {
       if (trait.isNone) continue
-      const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y') }
-      context.drawImage(trait.image, position.x, position.y, source.width, source.height)
+      const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y'), scale: 1 }
+      drawTraitArtwork(context, trait, position, source)
     }
   }
 
@@ -4230,10 +4399,32 @@ function getPairPositionOverrides(traits, positionRules = []) {
   const overrides = new Map()
   for (const rule of positionRules || []) {
     if (!selectedTraitIds.has(rule.first) || !selectedTraitIds.has(rule.second)) continue
-    overrides.set(rule.first, { x: Math.round(Number(rule.firstOffsetX) || 0), y: Math.round(Number(rule.firstOffsetY) || 0) })
-    overrides.set(rule.second, { x: Math.round(Number(rule.secondOffsetX) || 0), y: Math.round(Number(rule.secondOffsetY) || 0) })
+    overrides.set(rule.first, {
+      x: Math.round(Number(rule.firstOffsetX) || 0),
+      y: Math.round(Number(rule.firstOffsetY) || 0),
+      scale: normalizeRuleScale(rule.firstScale) / 100,
+    })
+    overrides.set(rule.second, {
+      x: Math.round(Number(rule.secondOffsetX) || 0),
+      y: Math.round(Number(rule.secondOffsetY) || 0),
+      scale: normalizeRuleScale(rule.secondScale) / 100,
+    })
   }
   return overrides
+}
+
+function drawTraitArtwork(context, trait, position, source) {
+  const scale = Number.isFinite(position.scale) ? position.scale : 1
+  context.save()
+  context.translate(position.x + source.width / 2, position.y + source.height / 2)
+  context.scale(scale, scale)
+  context.translate(-source.width / 2, -source.height / 2)
+  if (trait.type === 'image') {
+    context.drawImage(trait.image, 0, 0, source.width, source.height)
+  } else {
+    for (const layer of trait.layers) drawPsdLayer(context, layer)
+  }
+  context.restore()
 }
 
 function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
@@ -4272,7 +4463,7 @@ function buildUniqueRandomCombinations(categories, count, seed, rules = {}) {
   let attempt = 0
   const maxAttempts = Math.max(count * 50, 1000)
   while (combos.length < count && attempt < maxAttempts) {
-    const combo = buildRandomCombination(categories, seed, attempt, rules)
+    const combo = buildRandomCombination(categories, seed, attempt, rules, combos.length)
     if ((!combo.length && categories.length) || findCombinationViolation(combo, rules)) {
       attempt += 1
       continue
@@ -4284,7 +4475,7 @@ function buildUniqueRandomCombinations(categories, count, seed, rules = {}) {
     }
     attempt += 1
   }
-  if (combos.length < count) {
+  if (combos.length < count && !hasOrderedCategories(categories)) {
     for (const combo of buildCombinationsUpTo(categories, rules, count)) {
       const key = makeCombinationKey(combo)
       if (!seen.has(key)) {
@@ -4297,14 +4488,20 @@ function buildUniqueRandomCombinations(categories, count, seed, rules = {}) {
   return combos
 }
 
-function buildRandomCombination(categories, seed, index, rules = {}) {
+function buildRandomCombination(categories, seed, index, rules = {}, balancedIndex = index) {
   const random = mulberry32(hashString(`${seed}:${index}`))
   const combo = []
   for (const category of categories) {
     if (!shouldApplyCategory(category, combo, rules.categoryRequirements, rules.categoryConflicts)) continue
     const availableTraits = getCategoryChoices(category).filter((trait) => isTraitCompatibleWithCombo(trait, combo, rules.incompatibilities))
     if (!availableTraits.length) return []
-    combo.push(pickWeightedTrait(availableTraits, random))
+    const orderedTraits = getCategorySelectionMode(category) === 'ordered'
+      ? availableTraits.filter((trait) => !trait.isNone)
+      : []
+    const selectedTrait = orderedTraits.length
+      ? orderedTraits[balancedIndex % orderedTraits.length]
+      : pickWeightedTrait(availableTraits, random)
+    combo.push(selectedTrait)
   }
   return combo
 }
@@ -4338,11 +4535,20 @@ function buildCombinationsUpTo(categories, rules = {}, limit = Number.POSITIVE_I
 
 function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_INFINITY, timeBudgetMs = COMBO_COUNT_TIME_BUDGET_MS) {
   if (!rules.incompatibilities?.length && !rules.categoryRequirements?.length && !rules.categoryConflicts?.length) {
-    let count = 1
+    let orderedCycleLength = 1
+    let mixedCombinationCount = 1
     for (const category of categories) {
-      count *= getCategoryChoices(category).length
-      if (count > limit) return { count: limit, capped: true }
+      const choiceCount = getCategoryChoices(category).filter((trait) => (
+        getCategorySelectionMode(category) !== 'ordered' || !trait.isNone
+      )).length
+      if (getCategorySelectionMode(category) === 'ordered') {
+        orderedCycleLength = leastCommonMultiple(orderedCycleLength, choiceCount)
+      } else {
+        mixedCombinationCount *= choiceCount
+      }
+      if (orderedCycleLength * mixedCombinationCount > limit) return { count: limit, capped: true }
     }
+    const count = orderedCycleLength * mixedCombinationCount
     return { count, capped: false }
   }
 
@@ -4480,6 +4686,11 @@ function getTraitOffset(trait, axis) {
   return Number.isFinite(value) ? Math.round(value) : 0
 }
 
+function normalizeRuleScale(value) {
+  const scale = Number(value ?? 100)
+  return Number.isFinite(scale) ? Math.round(Math.max(10, Math.min(300, scale))) : 100
+}
+
 function findDuplicateCategoryNames(categories) {
   const counts = new Map()
   for (const category of categories) {
@@ -4549,7 +4760,7 @@ function formatCategoryConflict(rule) {
 }
 
 function formatPositionRule(rule, traitOptionMap = new Map()) {
-  return `${formatTraitKey(rule.first, traitOptionMap)} (X ${rule.firstOffsetX}, Y ${rule.firstOffsetY}) with ${formatTraitKey(rule.second, traitOptionMap)} (X ${rule.secondOffsetX}, Y ${rule.secondOffsetY})`
+  return `${formatTraitKey(rule.first, traitOptionMap)} (X ${rule.firstOffsetX}, Y ${rule.firstOffsetY}, ${normalizeRuleScale(rule.firstScale)}%) with ${formatTraitKey(rule.second, traitOptionMap)} (X ${rule.secondOffsetX}, Y ${rule.secondOffsetY}, ${normalizeRuleScale(rule.secondScale)}%)`
 }
 
 function formatTraitKey(key, traitOptionMap = new Map()) {
@@ -4600,6 +4811,7 @@ function getCombinationStructureKey(source) {
     categories: source.categories.map((category) => ({
       name: category.name,
       enabled: category.enabled !== false,
+      selectionMode: getCategorySelectionMode(category),
       hasNone: getCategoryNoneWeight(category) > 0,
       traits: category.traits.map((trait) => [getTraitId(trait), getTraitWeight(trait) > 0]),
     })),
@@ -4618,6 +4830,24 @@ function areCategoriesIncompatible(firstCategory, secondCategory, categoryConfli
 function getCategoryNoneWeight(category) {
   const weight = Number(category.noneWeight ?? 0)
   return Number.isFinite(weight) ? Math.max(0, weight) : 0
+}
+
+function getCategorySelectionMode(category) {
+  if (category?.selectionMode === 'ordered') return 'ordered'
+  if (category?.selectionMode === 'weighted') return 'weighted'
+  return isFaceCategory(category?.name) ? 'ordered' : 'weighted'
+}
+
+function hasOrderedCategories(categories = []) {
+  return categories.some((category) => getCategorySelectionMode(category) === 'ordered')
+}
+
+function leastCommonMultiple(first, second) {
+  if (!first || !second) return 0
+  let left = Math.abs(first)
+  let right = Math.abs(second)
+  while (right) [left, right] = [right, left % right]
+  return Math.abs(first * second) / left
 }
 
 function hashString(value) {

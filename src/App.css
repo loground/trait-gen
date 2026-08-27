@@ -653,8 +653,9 @@ button:disabled {
 }
 
 .trait-editor-modal {
-  width: min(980px, 100%);
-  max-height: min(820px, calc(100svh - 48px));
+  width: min(1440px, calc(100vw - 32px));
+  height: min(900px, calc(100svh - 32px));
+  max-height: none;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -1822,6 +1823,14 @@ button:disabled {
   margin-bottom: 0;
 }
 
+.trait-picker-field .optional-field-note {
+  color: #8290a2;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .trait-picker-field .manager-trait-preview {
   grid-column: 2;
   grid-row: 1 / span 2;
@@ -1860,6 +1869,29 @@ button:disabled {
   min-width: 0;
   padding: 7px 5px;
   text-align: right;
+}
+
+.trait-position-controls .scale-control {
+  min-width: 0;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px;
+}
+
+.trait-position-controls .compact-suffix {
+  min-width: 0;
+}
+
+.trait-position-controls .compact-suffix input {
+  width: 100%;
+}
+
+.trait-position-controls .compact-suffix b {
+  padding: 0 8px 0 4px;
+  color: #607188;
+  font-size: 10px;
 }
 
 .pair-position-preview {
@@ -1988,6 +2020,7 @@ button:disabled {
   pointer-events: none;
   opacity: 0.72;
   will-change: transform;
+  transform-origin: center;
 }
 
 .pair-position-preview-frame.interactive .position-preview-layer.active {
@@ -2172,7 +2205,7 @@ button:disabled {
 .trait-editor-workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 200px minmax(260px, 320px) minmax(380px, 1fr);
+  grid-template-columns: 220px minmax(430px, 1.25fr) minmax(360px, 0.9fr);
 }
 
 .trait-editor-nav {
@@ -2270,7 +2303,7 @@ button:disabled {
 
 .trait-editor-list-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 132px;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(280px, 1fr);
   align-items: end;
   gap: 16px;
   padding: 16px 18px 14px;
@@ -2321,6 +2354,38 @@ button:disabled {
 
 .selected-folder-controls {
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  align-items: start;
+  gap: 10px;
+}
+
+.folder-selection-mode {
+  min-width: 0;
+  gap: 4px;
+  margin: 0;
+  color: #45576c;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.folder-selection-mode select {
+  min-width: 0;
+  padding: 7px 8px;
+  border-color: #7ab6b0;
+  font-size: 11px;
+  box-shadow: 0 0 0 2px rgba(13, 107, 103, 0.08);
+}
+
+.folder-selection-mode small {
+  color: #708096;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
 }
 
 .modal-header .modal-faq-action {
@@ -2878,6 +2943,12 @@ button:focus-visible,
   margin-bottom: 10px;
 }
 
+.position-rule-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .rule-divider {
   height: 1px;
   margin: 14px 0 12px;
@@ -3019,7 +3090,7 @@ input[type='range'] {
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .trait-editor-workspace {
     display: block;
     overflow-y: auto;
@@ -3048,6 +3119,11 @@ input[type='range'] {
 }
 
 @media (max-width: 720px) {
+  .trait-editor-list-header,
+  .selected-folder-controls {
+    grid-template-columns: 1fr;
+  }
+
   .folder-conflict-pickers,
   .multi-rule-options {
     grid-template-columns: 1fr;
@@ -3110,7 +3186,8 @@ input[type='range'] {
   }
 
   .trait-editor-modal {
-    max-height: calc(100svh - 20px);
+    width: calc(100vw - 20px);
+    height: calc(100svh - 20px);
   }
 
   .rule-manager-modal {
