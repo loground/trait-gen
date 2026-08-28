@@ -20,8 +20,8 @@ ZIP generation is credit-gated on deployed hosts. Users can buy 3 generation
 credits for approximately $20 in official USDC or native ETH on Base by sending
 from any wallet and pasting the transaction hash. No wallet connection or user
 registration is required. Referral codes `ezzie`, `ink`, `filthy`, and
-`smolemaru` reduce the payment by $5. Manually issued generation codes remain
-available as a separate option.
+`smolemaru` reduce the payment by $5 and grant four credits instead of three.
+Manually issued generation codes remain available as a separate option.
 Loopback hosts (`localhost`, `127.0.0.1`, and `::1`) bypass codes so local
 development and previews remain free.
 
@@ -62,8 +62,8 @@ by default).
 
 Referral performance is available in the database view `referral_code_stats`.
 It reports quotes started, completed payments, conversion, paid revenue,
-discounts, and the latest payment for each source. View it from a trusted
-terminal with:
+credits and bonus credits granted, discounts, and the latest payment for each
+source. View it from a trusted terminal with:
 
 ```bash
 DATABASE_URL='postgresql://...' npm run referral:stats

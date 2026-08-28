@@ -11,6 +11,8 @@ const rows = await sql`
     payments_completed,
     conversion_percent,
     revenue_usd,
+    credits_granted,
+    bonus_credits,
     discounts_usd,
     last_payment_at
   FROM referral_code_stats
@@ -23,6 +25,8 @@ console.table(rows.map((row) => ({
   'payments completed': Number(row.payments_completed),
   'conversion %': Number(row.conversion_percent),
   'revenue USD': Number(row.revenue_usd).toFixed(2),
+  'credits granted': Number(row.credits_granted),
+  'bonus credits': Number(row.bonus_credits),
   'discounts USD': Number(row.discounts_usd).toFixed(2),
   'last payment': row.last_payment_at ? new Date(row.last_payment_at).toISOString() : '—',
 })))

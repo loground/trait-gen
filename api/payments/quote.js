@@ -38,6 +38,7 @@ export default async function handler(request, response) {
     }
     const referralCode = submittedReferralCode || null
     const quoteBaseUnits = QUOTE_BASE_UNITS - (referralCode ? REFERRAL_DISCOUNT_USD_MICROS : 0)
+    const credits = referralCode ? 4 : 3
     await sql`
       UPDATE crypto_payment_quotes
       SET status = 'expired'
@@ -45,7 +46,7 @@ export default async function handler(request, response) {
     `
 
     let rows = await sql`
-      SELECT id, amount_units, expires_at
+      SELECT id, amount_units, credits, expires_at
       FROM crypto_payment_quotes
       WHERE wallet_address = ${session.accountId}
         AND payment_asset = ${paymentAsset}
@@ -70,10 +71,10 @@ export default async function handler(request, response) {
           )
           VALUES (
             ${session.accountId}, ${BASE_CHAIN_ID}, ${paymentAsset}, ${tokenAddress}, ${recipientAddress},
-            ${amountUnits.toString()}::bigint, ${quotedUsdMicros}, ${referralCode}, 3, now() + make_interval(mins => ${QUOTE_DURATION_MINUTES})
+            ${amountUnits.toString()}::bigint, ${quotedUsdMicros}, ${referralCode}, ${credits}, now() + make_interval(mins => ${QUOTE_DURATION_MINUTES})
           )
           ON CONFLICT DO NOTHING
-          RETURNING id, amount_units, expires_at
+          RETURNING id, amount_units, credits, expires_at
         `
       }
     }
@@ -89,7 +90,7 @@ export default async function handler(request, response) {
       recipientAddress,
       amount: paymentAsset === 'USDC' ? formatUsdc(quote.amount_units) : formatEther(BigInt(quote.amount_units)),
       amountUnits: String(quote.amount_units),
-      credits: 3,
+      credits: Number(quote.credits),
       referralCode,
       discountUsd: referralCode ? 5 : 0,
       expiresAt: new Date(quote.expires_at).toISOString(),

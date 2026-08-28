@@ -313,7 +313,7 @@ function App() {
       if (!response.ok) throw new Error(await readResponseError(response, 'Could not verify that payment.'))
       const result = await response.json()
       setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
-      setAccessMessage(result.alreadyClaimed ? 'This payment was already added to this browser.' : 'Payment verified. Three generation credits were added.')
+      setAccessMessage(result.alreadyClaimed ? 'This payment was already added to this browser.' : `Payment verified. ${paymentQuote.credits} generation credits were added.`)
       setAccessOpen(false)
       await authorizeAndGenerate()
     } catch (error) {
@@ -2574,7 +2574,7 @@ function App() {
             <div className="intro-price-note">
               {LOCAL_FREE_GENERATION
                 ? 'Local development mode is free and does not require a generation code.'
-                : 'ZIP generation uses one credit. Buy 3 credits for about $20 in USDC or ETH on Base, or pay $15 with a referral code. No wallet connection or registration is required.'}
+                : 'ZIP generation uses one credit. Buy 3 credits for about $20 in USDC or ETH on Base, or get 4 credits for $15 with a referral code. No wallet connection or registration is required.'}
             </div>
             <button className="primary-action" type="button" onClick={acceptIntro}>
               <CheckCircle2 size={18} />
@@ -2657,7 +2657,7 @@ function App() {
                 <details>
                   <summary>How does the crypto payment work?</summary>
                   <p>
-                    Choose USDC or ETH. Trait Forge shows you a payment address and a special amount close to $20, or close to $15 with a valid referral code. Send that exact amount using the Base network, then paste the transaction link or number. Trait Forge checks the public transaction and adds three generation credits to this browser. You do not need to connect a wallet or create an account.
+                    Choose USDC or ETH. Trait Forge shows you a payment address and a special amount close to $20, or close to $15 with a valid referral code. Send that exact amount using the Base network, then paste the transaction link or number. Trait Forge checks the public transaction and adds three generation credits, or four with a referral, to this browser. You do not need to connect a wallet or create an account.
                   </p>
                   <p>
                     For USDC, use official USDC on Base only. For ETH, send Base ETH. Keep the page open until the credits appear, because the payment request and credits belong to this browser.
@@ -2675,7 +2675,7 @@ function App() {
             <header className="modal-header">
               <div>
                 <p className="eyebrow">No account or wallet connection</p>
-                <h2 id="access-title">Get 3 generation credits</h2>
+                <h2 id="access-title">Get {paymentQuote?.credits || 3} generation credits</h2>
               </div>
               <button type="button" aria-label="Close generation access" disabled={accessBusy} onClick={() => setAccessOpen(false)}>
                 <X size={18} />
@@ -2727,7 +2727,7 @@ function App() {
                     />
                   </label>
                   {paymentQuote?.referralCode && (
-                    <p><CheckCircle2 size={14} /> Code <strong>{paymentQuote.referralCode}</strong> applied — you save $5.</p>
+                    <p><CheckCircle2 size={14} /> Code <strong>{paymentQuote.referralCode}</strong> applied — save $5 and get 1 bonus credit.</p>
                   )}
                 </div>
 

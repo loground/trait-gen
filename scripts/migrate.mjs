@@ -12,6 +12,7 @@ const migrationFiles = [
   '003_referral_codes.sql',
   '004_referral_ledger_metadata.sql',
   '005_referral_reporting.sql',
+  '006_referral_bonus_credit.sql',
 ]
 for (const fileName of migrationFiles) {
   const migrationUrl = new URL(`../db/migrations/${fileName}`, import.meta.url)
