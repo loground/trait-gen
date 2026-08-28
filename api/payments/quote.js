@@ -5,6 +5,7 @@ import { getBasePaymentAddress, getBaseRpcUrl } from '../_lib/config.js'
 import { getDatabase } from '../_lib/db.js'
 import { readJson, requireMethod, requireTrustedOrigin, sendJson } from '../_lib/http.js'
 import { consumeRateLimit } from '../_lib/rate-limit.js'
+import { isValidReferralCode, normalizeReferralCode, REFERRAL_DISCOUNT_USD_MICROS } from '../_lib/referrals.js'
 import { getOrCreateSession } from '../_lib/session.js'
 
 const BASE_CHAIN_ID = 8453
@@ -31,6 +32,12 @@ export default async function handler(request, response) {
     const body = await readJson(request)
     const paymentAsset = String(body.asset || 'USDC').toUpperCase()
     if (!['USDC', 'ETH'].includes(paymentAsset)) return sendJson(response, 400, { error: 'Choose USDC or ETH.' })
+    const submittedReferralCode = normalizeReferralCode(body.referralCode)
+    if (submittedReferralCode && !isValidReferralCode(submittedReferralCode)) {
+      return sendJson(response, 400, { error: 'That referral code is not valid.' })
+    }
+    const referralCode = submittedReferralCode || null
+    const quoteBaseUnits = QUOTE_BASE_UNITS - (referralCode ? REFERRAL_DISCOUNT_USD_MICROS : 0)
     await sql`
       UPDATE crypto_payment_quotes
       SET status = 'expired'
@@ -42,6 +49,7 @@ export default async function handler(request, response) {
       FROM crypto_payment_quotes
       WHERE wallet_address = ${session.accountId}
         AND payment_asset = ${paymentAsset}
+        AND referral_code IS NOT DISTINCT FROM ${referralCode}
         AND status = 'pending'
         AND expires_at > now()
       ORDER BY created_at DESC
@@ -50,7 +58,7 @@ export default async function handler(request, response) {
 
     if (!rows.length) {
       for (let attempt = 0; attempt < 12 && !rows.length; attempt += 1) {
-        const quotedUsdMicros = QUOTE_BASE_UNITS + randomInt(1, QUOTE_SUFFIX_RANGE)
+        const quotedUsdMicros = quoteBaseUnits + randomInt(1, QUOTE_SUFFIX_RANGE)
         const amountUnits = paymentAsset === 'USDC'
           ? BigInt(quotedUsdMicros)
           : await getEthAmountUnits(quotedUsdMicros)
@@ -58,11 +66,11 @@ export default async function handler(request, response) {
         rows = await sql`
           INSERT INTO crypto_payment_quotes (
             wallet_address, chain_id, payment_asset, token_address, recipient_address,
-            amount_units, quoted_usd_micros, credits, expires_at
+            amount_units, quoted_usd_micros, referral_code, credits, expires_at
           )
           VALUES (
             ${session.accountId}, ${BASE_CHAIN_ID}, ${paymentAsset}, ${tokenAddress}, ${recipientAddress},
-            ${amountUnits.toString()}::bigint, ${quotedUsdMicros}, 3, now() + make_interval(mins => ${QUOTE_DURATION_MINUTES})
+            ${amountUnits.toString()}::bigint, ${quotedUsdMicros}, ${referralCode}, 3, now() + make_interval(mins => ${QUOTE_DURATION_MINUTES})
           )
           ON CONFLICT DO NOTHING
           RETURNING id, amount_units, expires_at
@@ -82,6 +90,8 @@ export default async function handler(request, response) {
       amount: paymentAsset === 'USDC' ? formatUsdc(quote.amount_units) : formatEther(BigInt(quote.amount_units)),
       amountUnits: String(quote.amount_units),
       credits: 3,
+      referralCode,
+      discountUsd: referralCode ? 5 : 0,
       expiresAt: new Date(quote.expires_at).toISOString(),
       explorerUrl: 'https://base.blockscout.com',
     })

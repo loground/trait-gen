@@ -19,8 +19,9 @@ npm run dev
 ZIP generation is credit-gated on deployed hosts. Users can buy 3 generation
 credits for approximately $20 in official USDC or native ETH on Base by sending
 from any wallet and pasting the transaction hash. No wallet connection or user
-registration is required. Manually issued generation codes remain available as
-a separate option.
+registration is required. Referral codes `ezzie`, `ink`, `filthy`, and
+`smolemaru` reduce the payment by $5. Manually issued generation codes remain
+available as a separate option.
 Loopback hosts (`localhost`, `127.0.0.1`, and `::1`) bypass codes so local
 development and previews remain free.
 
@@ -51,11 +52,22 @@ development and previews remain free.
 The payment wall accepts the official Base USDC contract
 `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` or native Base ETH. ETH quotes use
 Chainlink's Base ETH/USD feed at `0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70`.
-Each anonymous browser receives a short-lived exact amount close to $20. The
+Each anonymous browser receives a short-lived exact amount close to $20, or $15
+when a valid referral code is applied. Referral links can prefill a code with
+`?ref=code`. The
 small amount variation binds a public blockchain transaction to that browser so
 another visitor cannot copy the transaction hash and steal the credits.
 Payments are credited once after the configured Base confirmation count (five
 by default).
+
+Referral performance is available in the database view `referral_code_stats`.
+It reports quotes started, completed payments, conversion, paid revenue,
+discounts, and the latest payment for each source. View it from a trusted
+terminal with:
+
+```bash
+DATABASE_URL='postgresql://...' npm run referral:stats
+```
 
 Create a private generation code from a trusted terminal:
 

@@ -48,6 +48,7 @@ const PREVIEW_BACKGROUNDS = ['#ffffff', '#d6dbe3', '#111827']
 const X_SHARE_TEXT = 'I just forged the traits for my upcoming NFT collection on trait-forge.art, it was easy and cool'
 const GENERATION_CODE_URL = '/api/codes/redeem'
 const INTRO_ACCEPTED_KEY = 'trait-forge:intro-accepted:v1'
+const REFERRAL_CODES = new Set(['ezzie', 'ink', 'filthy', 'smolemaru'])
 const LOCAL_FREE_GENERATION = isLoopbackHostname(globalThis.location?.hostname)
 const OUTPUT_FORMATS = {
   png: { mime: 'image/png', extension: 'png', label: 'PNG' },
@@ -97,6 +98,11 @@ function isLoopbackHostname(hostname = '') {
   return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
 }
 
+function getInitialReferralCode() {
+  const code = new URLSearchParams(globalThis.location?.search || '').get('ref')?.trim().toLowerCase() || ''
+  return REFERRAL_CODES.has(code) ? code : ''
+}
+
 function App() {
   const [project, setProject] = useState(DEFAULT_PROJECT)
   const [source, setSource] = useState(null)
@@ -115,6 +121,7 @@ function App() {
   const [accessBusy, setAccessBusy] = useState(false)
   const [accessMessage, setAccessMessage] = useState('')
   const [generationCode, setGenerationCode] = useState('')
+  const [referralCode, setReferralCode] = useState(getInitialReferralCode)
   const [paymentAsset, setPaymentAsset] = useState('USDC')
   const [paymentQuote, setPaymentQuote] = useState(null)
   const [paymentTransaction, setPaymentTransaction] = useState('')
@@ -185,7 +192,6 @@ function App() {
     }
     setAccessMessage('')
     setAccessOpen(true)
-    await loadPaymentQuote()
   }
 
   function getCollectionGenerationError(activeSource) {
@@ -277,7 +283,7 @@ function App() {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ asset }),
+        body: JSON.stringify({ asset, referralCode: referralCode.trim() }),
       })
       if (!response.ok) throw new Error(await readResponseError(response, 'Could not prepare the payment.'))
       const quote = await response.json()
@@ -2568,7 +2574,7 @@ function App() {
             <div className="intro-price-note">
               {LOCAL_FREE_GENERATION
                 ? 'Local development mode is free and does not require a generation code.'
-                : 'ZIP generation uses one credit. Buy 3 credits for about $20 in USDC or ETH on Base, with no wallet connection or registration required. Manual generation codes are also supported.'}
+                : 'ZIP generation uses one credit. Buy 3 credits for about $20 in USDC or ETH on Base, or pay $15 with a referral code. No wallet connection or registration is required.'}
             </div>
             <button className="primary-action" type="button" onClick={acceptIntro}>
               <CheckCircle2 size={18} />
@@ -2651,7 +2657,7 @@ function App() {
                 <details>
                   <summary>How does the crypto payment work?</summary>
                   <p>
-                    Choose USDC or ETH. Trait Forge shows you a payment address and a special amount close to $20. Send that exact amount using the Base network, then paste the transaction link or number. Trait Forge checks the public transaction and adds three generation credits to this browser. You do not need to connect a wallet or create an account.
+                    Choose USDC or ETH. Trait Forge shows you a payment address and a special amount close to $20, or close to $15 with a valid referral code. Send that exact amount using the Base network, then paste the transaction link or number. Trait Forge checks the public transaction and adds three generation credits to this browser. You do not need to connect a wallet or create an account.
                   </p>
                   <p>
                     For USDC, use official USDC on Base only. For ETH, send Base ETH. Keep the page open until the credits appear, because the payment request and credits belong to this browser.
@@ -2680,7 +2686,7 @@ function App() {
                 <div className="payment-option-heading">
                   <span className="payment-option-icon"><CircleDollarSign size={25} /></span>
                   <div>
-                    <h3>Pay $20 on Base: USDC/ETH</h3>
+                    <h3>Pay {paymentQuote?.referralCode ? '$15' : '$20'} on Base: USDC/ETH</h3>
                     <p>Send from any wallet, then paste the transaction below. Base only.</p>
                   </div>
                 </div>
@@ -2703,10 +2709,32 @@ function App() {
                   <span>{paymentAsset === 'USDC' ? 'Do not send ETH, bridged USDC, or tokens from another network.' : 'Do not send ETH from Ethereum mainnet or another network.'} Keep this browser open until credits are added. Crypto payments cannot be reversed.</span>
                 </div>
 
+                <div className="referral-code-field">
+                  <label>
+                    Referral code <span>optional · save $5</span>
+                    <input
+                      type="text"
+                      autoComplete="off"
+                      placeholder="Enter referral code"
+                      value={referralCode}
+                      disabled={accessBusy}
+                      onChange={(event) => {
+                        setReferralCode(event.target.value.toLowerCase())
+                        setPaymentQuote(null)
+                        setPaymentTransaction('')
+                        setAccessMessage('')
+                      }}
+                    />
+                  </label>
+                  {paymentQuote?.referralCode && (
+                    <p><CheckCircle2 size={14} /> Code <strong>{paymentQuote.referralCode}</strong> applied — you save $5.</p>
+                  )}
+                </div>
+
                 {paymentQuote ? (
                   <>
                     <ol className="crypto-payment-steps">
-                      <li>Copy the exact USDC amount and payment address.</li>
+                      <li>Copy the exact {paymentQuote.asset} amount and payment address.</li>
                       <li>Send it on the <strong>Base</strong> network from any wallet.</li>
                       <li>Paste the transaction hash or explorer link and verify.</li>
                     </ol>

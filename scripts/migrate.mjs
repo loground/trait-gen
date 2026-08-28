@@ -6,7 +6,13 @@ if (!databaseUrl) throw new Error('DATABASE_URL is required.')
 
 const sql = neon(databaseUrl)
 
-const migrationFiles = ['001_credit_ledger.sql', '002_usdc_payments.sql']
+const migrationFiles = [
+  '001_credit_ledger.sql',
+  '002_usdc_payments.sql',
+  '003_referral_codes.sql',
+  '004_referral_ledger_metadata.sql',
+  '005_referral_reporting.sql',
+]
 for (const fileName of migrationFiles) {
   const migrationUrl = new URL(`../db/migrations/${fileName}`, import.meta.url)
   const migration = await readFile(migrationUrl, 'utf8')

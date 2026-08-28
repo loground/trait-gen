@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "node --test src/*.test.js",
     "code:create": "node scripts/create_generation_code.mjs",
+    "referral:stats": "node scripts/referral_stats.mjs",
     "lint": "oxlint",
     "migrate": "node scripts/migrate.mjs",
     "preview": "vite preview"
