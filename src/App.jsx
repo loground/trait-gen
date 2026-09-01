@@ -701,19 +701,10 @@ function App() {
     setActiveDropTarget('')
     if (busy) return
 
-    const items = Array.from(event.dataTransfer?.items || []).filter((item) => item.kind === 'file')
-    const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean)
-    const containsDirectory = entries.some((entry) => entry.isDirectory)
-
     try {
-      if (containsDirectory) {
-        const files = await collectDroppedFiles(event.dataTransfer)
-        await importFolderFiles(files)
-        return
-      }
-
-      const files = Array.from(event.dataTransfer?.files || [])
-      if (files.length > 1 || files.some((file) => isArtworkFile(file) && getFileImportPath(file).includes('/'))) {
+      const files = await collectDroppedFiles(event.dataTransfer)
+      const isFolderDrop = files.length > 1 || files.some((file) => getFileImportPath(file).includes('/'))
+      if (isFolderDrop) {
         await importFolderFiles(files)
         return
       }
@@ -723,7 +714,9 @@ function App() {
         setStatus('No PSD, Procreate artwork, or trait folder was found in that drop.')
         return
       }
-      await importLayeredFile(file)
+      if (isPsdFile(file) || isProcreateFile(file)) await importLayeredFile(file)
+      else if (isArtworkFile(file)) await selectBaseFile(file)
+      else setStatus('Drop a PSD, Procreate file, image, or folder containing trait images.')
     } catch (error) {
       setStatus(getErrorMessage(error, 'Could not read that artwork source.'))
     }
@@ -2463,15 +2456,15 @@ function App() {
           onDragEnter={(event) => handleDropOver(event, 'preview')}
           onDragOver={(event) => handleDropOver(event, 'preview')}
           onDragLeave={(event) => handleDropLeave(event, 'preview')}
-          onDrop={(event) => handleFileDrop(event, 'preview')}
+          onDrop={handleSourceDrop}
         >
           {previewUrl ? (
             <img src={previewUrl} alt="Generated artwork preview" />
           ) : (
             <div className="preview-empty">
               <Upload size={36} />
-              <span>Drop a PSD, Procreate file, or base image here.</span>
-              <small>PNG, JPG, WebP, and Procreate are supported.</small>
+              <span>Drop a PSD, Procreate file, base image, or trait folders here.</span>
+              <small>One folder, nested folders, and several folders are supported.</small>
             </div>
           )}
         </section>
@@ -4974,13 +4967,40 @@ function isPsdFile(file) {
 }
 
 async function collectDroppedFiles(dataTransfer) {
-  const entries = Array.from(dataTransfer?.items || [])
-    .filter((item) => item.kind === 'file')
+  const items = Array.from(dataTransfer?.items || []).filter((item) => item.kind === 'file')
+  const handles = (await Promise.all(items.map(async (item) => {
+    try {
+      return await item.getAsFileSystemHandle?.()
+    } catch {
+      return null
+    }
+  }))).filter(Boolean)
+  if (handles.length) {
+    const nestedFiles = await Promise.all(handles.map((handle) => readDroppedHandle(handle)))
+    return nestedFiles.flat()
+  }
+
+  const entries = items
     .map((item) => item.webkitGetAsEntry?.())
     .filter(Boolean)
   if (!entries.length) return Array.from(dataTransfer?.files || [])
   const nestedFiles = await Promise.all(entries.map((entry) => readDroppedEntry(entry)))
   return nestedFiles.flat()
+}
+
+async function readDroppedHandle(handle, parentPath = '') {
+  const handlePath = [parentPath, handle.name].filter(Boolean).join('/')
+  if (handle.kind === 'file') {
+    const file = await handle.getFile()
+    rememberDroppedFilePath(file, handlePath)
+    return [file]
+  }
+  if (handle.kind !== 'directory') return []
+  const files = []
+  for await (const child of handle.values()) {
+    files.push(...await readDroppedHandle(child, handlePath))
+  }
+  return files
 }
 
 async function readDroppedEntry(entry, parentPath = '') {
