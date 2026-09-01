@@ -33,6 +33,7 @@ import './App.css'
 import { findCombinationViolation, findInvalidCombination } from './ruleValidation.js'
 import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './smartRarities.js'
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
+import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from './folderImport.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -695,11 +696,60 @@ function App() {
     }
   }
 
+  async function handleSourceDrop(event) {
+    event.preventDefault()
+    setActiveDropTarget('')
+    if (busy) return
+
+    const items = Array.from(event.dataTransfer?.items || []).filter((item) => item.kind === 'file')
+    const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean)
+    const containsDirectory = entries.some((entry) => entry.isDirectory)
+
+    try {
+      if (containsDirectory) {
+        const files = await collectDroppedFiles(event.dataTransfer)
+        await importFolderFiles(files)
+        return
+      }
+
+      const files = Array.from(event.dataTransfer?.files || [])
+      if (files.length > 1 || files.some((file) => isArtworkFile(file) && getFileImportPath(file).includes('/'))) {
+        await importFolderFiles(files)
+        return
+      }
+
+      const file = files[0]
+      if (!file) {
+        setStatus('No PSD, Procreate artwork, or trait folder was found in that drop.')
+        return
+      }
+      await importLayeredFile(file)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not read that artwork source.'))
+    }
+  }
+
   async function handleFolderUpload(event) {
     const files = Array.from(event.target.files || [])
+    await importFolderFiles(files)
+    event.target.value = ''
+  }
+
+  async function handleFolderDrop(event) {
+    event.preventDefault()
+    setActiveDropTarget('')
+    if (busy) return
+    try {
+      const files = await collectDroppedFiles(event.dataTransfer)
+      await importFolderFiles(files)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not read those dropped folders.'))
+    }
+  }
+
+  async function importFolderFiles(files) {
     if (!files.length) return
     if (!(await ensureHolderAccess())) {
-      event.target.value = ''
       return
     }
 
@@ -720,7 +770,6 @@ function App() {
       setStatus(getErrorMessage(error, 'Could not read those folders. Use image files inside category folders.'))
     } finally {
       setBusy(false)
-      event.target.value = ''
     }
   }
 
@@ -2162,13 +2211,13 @@ function App() {
             onDragEnter={(event) => handleDropOver(event, 'psd')}
             onDragOver={(event) => handleDropOver(event, 'psd')}
             onDragLeave={(event) => handleDropLeave(event, 'psd')}
-            onDrop={(event) => handleFileDrop(event, 'psd')}
+            onDrop={handleSourceDrop}
             disabled={busy}
           >
             <Layers3 size={22} />
             <span>
-              <strong>PSD / Procreate</strong>
-              <small>Layered PSD or flattened Procreate preview.</small>
+              <strong>PSD / Procreate / trait folders</strong>
+              <small>Drop one file, one folder, or several folders here.</small>
             </span>
           </button>
           <div className="split-row">
@@ -2188,7 +2237,16 @@ function App() {
                 <small>Drop or browse</small>
               </span>
             </button>
-            <button type="button" onClick={() => folderInputRef.current?.click()} disabled={busy}>
+            <button
+              className={activeDropTarget === 'folders' ? 'drag-active' : ''}
+              type="button"
+              onClick={() => folderInputRef.current?.click()}
+              onDragEnter={(event) => handleDropOver(event, 'folders')}
+              onDragOver={(event) => handleDropOver(event, 'folders')}
+              onDragLeave={(event) => handleDropLeave(event, 'folders')}
+              onDrop={handleFolderDrop}
+              disabled={busy}
+            >
               <FolderOpen size={18} />
               Trait folders
             </button>
@@ -4306,18 +4364,16 @@ function collectRenderableLayers(node) {
 async function parseFolders(files, baseFile) {
   const imageFiles = files
     .filter(isArtworkFile)
-    .sort((first, second) => (first.webkitRelativePath || first.name).localeCompare(second.webkitRelativePath || second.name))
+    .sort((first, second) => getFileImportPath(first).localeCompare(getFileImportPath(second)))
   if (!imageFiles.length) {
     throw new Error('No PNG, JPG, WebP, or Procreate trait artwork found in the selected folder.')
   }
 
-  const stripped = stripCommonRoot(imageFiles)
+  const plannedFiles = planFolderCategories(imageFiles)
   const categoryMap = new Map()
-  for (const item of stripped) {
-    const parts = item.path.split('/').filter(Boolean)
-    if (parts.length < 2) continue
-    const category = cleanName(parts[0])
-    const traitName = cleanName(parts.slice(1).join(' ').replace(/\.[^.]+$/, ''))
+  for (const item of plannedFiles) {
+    const category = cleanName(item.categoryLabel)
+    const traitName = cleanName(item.fileName)
     const image = await loadImageFromFile(item.file)
     const traits = categoryMap.get(category) || []
     traits.push({
@@ -4360,14 +4416,6 @@ async function parseFolders(files, baseFile) {
     categoryRequirements: [],
     categoryConflicts: [],
   }
-}
-
-function stripCommonRoot(files) {
-  const mapped = files.map((file) => ({ file, path: file.webkitRelativePath || file.name }))
-  const firstParts = mapped.map((item) => item.path.split('/').filter(Boolean))
-  const shouldStrip = firstParts.every((parts) => parts.length > 2 && parts[0] === firstParts[0][0])
-  if (!shouldStrip) return mapped
-  return mapped.map((item) => ({ ...item, path: item.path.split('/').slice(1).join('/') }))
 }
 
 async function renderArtwork(source, traits, options = {}) {
@@ -4931,13 +4979,17 @@ async function collectDroppedFiles(dataTransfer) {
     .map((item) => item.webkitGetAsEntry?.())
     .filter(Boolean)
   if (!entries.length) return Array.from(dataTransfer?.files || [])
-  const nestedFiles = await Promise.all(entries.map(readDroppedEntry))
+  const nestedFiles = await Promise.all(entries.map((entry) => readDroppedEntry(entry)))
   return nestedFiles.flat()
 }
 
-async function readDroppedEntry(entry) {
+async function readDroppedEntry(entry, parentPath = '') {
+  const entryPath = [parentPath, entry.name].filter(Boolean).join('/')
   if (entry.isFile) {
-    return new Promise((resolve, reject) => entry.file((file) => resolve([file]), reject))
+    return new Promise((resolve, reject) => entry.file((file) => {
+      rememberDroppedFilePath(file, entryPath)
+      resolve([file])
+    }, reject))
   }
   if (!entry.isDirectory) return []
   const reader = entry.createReader()
@@ -4947,7 +4999,7 @@ async function readDroppedEntry(entry) {
     if (!batch.length) break
     children.push(...batch)
   }
-  return (await Promise.all(children.map(readDroppedEntry))).flat()
+  return (await Promise.all(children.map((child) => readDroppedEntry(child, entryPath)))).flat()
 }
 
 function makeOneOfOneId(name) {
