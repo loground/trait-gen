@@ -45,6 +45,14 @@ export function findCombinationViolation(combo, rules = {}) {
     }
   }
 
+  for (const rule of rules.traitCategoryConflicts || []) {
+    const blockingTraitApplied = combo.some((trait) => !trait.isNone && getTraitId(trait) === rule.trait)
+    const blockedCategoryApplied = combo.some((trait) => !trait.isNone && trait.category === rule.category)
+    if (blockingTraitApplied && blockedCategoryApplied) {
+      return `${rule.category} cannot appear with ${rule.trait}.`
+    }
+  }
+
   const selectedCategories = [...new Set(combo.filter((trait) => !trait.isNone).map((trait) => trait.category))]
   for (let firstIndex = 0; firstIndex < selectedCategories.length; firstIndex += 1) {
     for (let secondIndex = firstIndex + 1; secondIndex < selectedCategories.length; secondIndex += 1) {
