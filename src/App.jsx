@@ -2669,7 +2669,7 @@ function App() {
                 <details open>
                   <summary>What does “No trait chance” do?</summary>
                   <p>
-                    It lets the generator leave this folder empty. At 0, a trait from the folder always appears. Raise the number to leave the folder empty more often. The “Estimated” line shows the chance Trait Forge calculates from all the numbers in that folder.
+                    It lets the generator leave this folder empty. At 0, a trait from the folder always appears. Raise the number to leave the folder empty more often. The “Estimated left empty” line shows the percentage of images where no trait from this folder will appear, calculated from all the numbers in that folder.
                   </p>
                 </details>
                 <details>
@@ -3042,7 +3042,7 @@ function App() {
                         />
                         <span>%</span>
                       </div>
-                      <small>Estimated: {formatChance(traitEditorNoneChance)} of images</small>
+                      <small>Estimated left empty: {formatChance(traitEditorNoneChance)} of images</small>
                     </div>
                   </div>
                 </header>
