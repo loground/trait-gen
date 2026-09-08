@@ -594,8 +594,8 @@ function App() {
       setPositionRuleFolderDraft(emptyRuleFolderDraft)
       setStatus(
         lowMemoryMode
-          ? `Loaded ${parsed.categories.length} categories from ${file.name} in low-memory mode (${formatBytes(estimatedBitmapBytes)} expanded). Layers decode as needed.`
-          : `Loaded ${parsed.categories.length} categories from ${file.name}.`,
+          ? `Loaded ${parsed.categories.length} categories from ${file.name} in low-memory mode (${formatBytes(estimatedBitmapBytes)} expanded).${parsed.autoCreatedTraitsFolder ? ' Ungrouped layers were added to a Traits folder.' : ''} Layers decode as needed.`
+          : `Loaded ${parsed.categories.length} categories from ${file.name}.${parsed.autoCreatedTraitsFolder ? ' Ungrouped layers were added to a Traits folder.' : ''}`,
       )
       await renderPreview(parsed)
     } catch (error) {
@@ -4408,22 +4408,32 @@ function findInvalidRuleReference(source) {
 
 function parsePsd(psd, fileName) {
   const rootChildren = psd.children || []
-  const baseLayers = rootChildren.filter((child) => !child.children?.length && hasRenderableCanvas(child))
+  const groupedCategories = rootChildren
+    .filter((child) => child.children?.length)
+    .map((group) => ({
+      name: cleanName(group.name),
+      traits: group.children
+        .filter((child) => child.visible !== false)
+        .map((child, index) => makePsdTrait(child, cleanName(group.name), index))
+        .filter(Boolean),
+    }))
+    .filter((category) => category.traits.length)
+  const ungroupedLayers = rootChildren.filter((child) => !child.children?.length)
+  const ungroupedTraits = ungroupedLayers
+    .map((layer, index) => makePsdTrait(layer, 'Traits', index))
+    .filter(Boolean)
+  const autoCreatedTraitsFolder = !groupedCategories.length && ungroupedTraits.length > 0
   const categories = sortCategoriesForRender(
-    rootChildren
-      .filter((child) => child.children?.length)
-      .map((group) => ({
-        name: cleanName(group.name),
-        traits: group.children
-          .filter((child) => child.visible !== false)
-          .map((child, index) => makePsdTrait(child, cleanName(group.name), index))
-          .filter(Boolean),
-      }))
-      .filter((category) => category.traits.length),
+    autoCreatedTraitsFolder
+      ? [{ name: 'Traits', traits: ungroupedTraits }]
+      : groupedCategories,
   )
+  const baseLayers = autoCreatedTraitsFolder
+    ? []
+    : ungroupedLayers.filter((child) => hasRenderableCanvas(child))
 
   if (!categories.length) {
-    throw new Error('No trait folders found. Put traits inside root-level PSD groups.')
+    throw new Error('No renderable trait layers were found in this PSD.')
   }
 
   return {
@@ -4433,6 +4443,7 @@ function parsePsd(psd, fileName) {
     height: psd.height,
     baseLayers,
     categories,
+    autoCreatedTraitsFolder,
     oneOfOnes: [],
     incompatibilities: [],
     positionRules: [],
