@@ -34,6 +34,7 @@ import { findCombinationViolation, findInvalidCombination } from './ruleValidati
 import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './smartRarities.js'
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
 import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from './folderImport.js'
+import { spreadSimilarCombinations } from './combinationOrder.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -1882,9 +1883,12 @@ function App() {
     setStatus(`Rendering ${sampleCount} sample artworks...`)
     const createdUrls = []
     try {
-      const combos = project.mode === 'all' && !hasOrderedCategories(activeCategories)
+      const selectedCombos = project.mode === 'all' && !hasOrderedCategories(activeCategories)
         ? buildCombinationsUpTo(activeCategories, rules, sampleCount)
         : buildUniqueRandomCombinations(activeCategories, sampleCount, project.seed, rules)
+      const combos = hasOrderedCategories(activeCategories)
+        ? selectedCombos
+        : spreadSimilarCombinations(selectedCombos, project.seed)
       if (!combos.length) throw new Error('No valid sample combinations could be selected.')
 
       const previews = []
@@ -1975,10 +1979,13 @@ function App() {
       ]
       const metadataRows = []
       const manifest = []
-      const combos =
+      const selectedCombos =
         project.mode === 'all' && !hasOrderedCategories(activeCategories)
           ? buildCombinationsUpTo(activeCategories, rules, targetCount)
           : buildUniqueRandomCombinations(activeCategories, targetCount, project.seed, rules)
+      const combos = hasOrderedCategories(activeCategories)
+        ? selectedCombos
+        : spreadSimilarCombinations(selectedCombos, project.seed)
 
       if (combos.length !== targetCount) {
         throw new Error(`Only ${combos.length} unique valid combinations could be selected. Requested ${targetCount}.`)
@@ -2003,6 +2010,7 @@ function App() {
             categoryRequirements: rules.categoryRequirements.length,
             traitCategoryConflicts: rules.traitCategoryConflicts.length,
             categoryConflicts: rules.categoryConflicts.length,
+            adjacencyShuffleApplied: !hasOrderedCategories(activeCategories),
             collectionEditions: combos.length,
             oneOfOneEditions: oneOfOnes.length,
             totalEditions: combos.length + oneOfOnes.length,
