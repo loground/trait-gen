@@ -37,6 +37,7 @@ import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from
 import { spreadSimilarCombinations } from './combinationOrder.js'
 import { createDurableZipSession, restoreLatestDurableZip } from './durableZip.js'
 import { getSessionAssetName, loadSessionSnapshot, saveSessionSnapshot } from './sessionStorage.js'
+import { orderRestoredCategories, resolveRestoredTraitId } from './backupRestore.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -4277,10 +4278,20 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
         firstMatches: matchesForId(rule.first),
         secondMatches: matchesForId(rule.second),
       })),
-      positionRules: (source.positionRules || []).map((rule) => ({ ...rule })),
-      categoryRequirements: source.categoryRequirements || [],
-      traitCategoryConflicts: source.traitCategoryConflicts || [],
-      categoryConflicts: source.categoryConflicts || [],
+      positionRules: (source.positionRules || []).map((rule) => ({
+        ...rule,
+        firstMatches: matchesForId(rule.first),
+        secondMatches: matchesForId(rule.second),
+      })),
+      categoryRequirements: (source.categoryRequirements || []).map((rule) => ({
+        ...rule,
+        requiredTraitMatches: matchesForId(rule.requiredTrait),
+      })),
+      traitCategoryConflicts: (source.traitCategoryConflicts || []).map((rule) => ({
+        ...rule,
+        traitMatches: matchesForId(rule.trait),
+      })),
+      categoryConflicts: (source.categoryConflicts || []).map((rule) => ({ ...rule })),
       oneOfOnes: (source.oneOfOnes || []).map((artwork) => ({
         id: artwork.id,
         originalName: artwork.originalName,
@@ -4361,8 +4372,26 @@ async function restoreSourceFromSession({ snapshot, assets }) {
 
   if (snapshot.source.type === 'psd') {
     rawSource = await parsePsdSourceFile(getAsset(snapshot.source.sourceFile))
+    const availableCategories = new Set(rawSource.categories)
+    const rawCategoryBySavedIndex = new Map()
+    for (const [backupCategoryIndex, backupCategory] of (backup.source.categories || []).entries()) {
+      const backupIds = new Set(backupCategory.traits.map((trait) => trait.id))
+      const bestMatch = [...availableCategories]
+        .map((category) => ({
+          category,
+          matches: category.traits.filter((trait) => backupIds.has(getTraitId(trait))).length,
+        }))
+        .sort((first, second) => second.matches - first.matches)[0]
+      const category = bestMatch?.matches
+        ? bestMatch.category
+        : rawSource.categories[backupCategory.categoryIndex ?? backupCategoryIndex]
+      if (category && availableCategories.has(category)) {
+        rawCategoryBySavedIndex.set(backupCategory.categoryIndex ?? backupCategoryIndex, category)
+        availableCategories.delete(category)
+      }
+    }
     for (const descriptor of snapshot.source.traitAssets || []) {
-      const category = rawSource.categories[descriptor.categoryIndex]
+      const category = rawCategoryBySavedIndex.get(descriptor.categoryIndex)
       if (!category) throw new Error('An autosaved trait no longer matches its PSD group.')
       const file = getAsset(descriptor.asset)
       category.traits.push({
@@ -4454,10 +4483,12 @@ function restoreProjectBackup(source, backup) {
   }
 
   const unusedCategories = new Set(source.categories)
-  const restoredCategoryByCurrentCategory = new Map()
+  const restoredCategoryByBackupIndex = new Map()
   const restoredIdByBackupId = new Map()
+  const restoredIdByBackupLocation = new Map()
 
-  for (const backupCategory of backup.source.categories) {
+  for (const [backupCategoryIndex, backupCategory] of backup.source.categories.entries()) {
+    const savedCategoryIndex = backupCategory.categoryIndex ?? backupCategoryIndex
     const backupIds = new Set(backupCategory.traits.map((trait) => trait.id))
     let currentCategory = [...unusedCategories]
       .map((category) => ({
@@ -4467,7 +4498,7 @@ function restoreProjectBackup(source, backup) {
       .sort((first, second) => second.matches - first.matches)[0]
 
     if (!currentCategory?.matches) {
-      currentCategory = { category: source.categories[backupCategory.categoryIndex], matches: 0 }
+      currentCategory = { category: source.categories[savedCategoryIndex], matches: 0 }
     }
     if (!currentCategory.category || !unusedCategories.has(currentCategory.category)) {
       throw new Error(`Could not match the backed-up group "${backupCategory.name}" to the loaded source.`)
@@ -4484,6 +4515,10 @@ function restoreProjectBackup(source, backup) {
     backupCategory.traits.forEach((backupTrait, traitIndex) => {
       const currentTrait = matches[traitIndex]
       restoredIdByBackupId.set(backupTrait.id, getTraitId(currentTrait))
+      restoredIdByBackupLocation.set(
+        `${savedCategoryIndex}:${backupTrait.traitIndex ?? traitIndex}`,
+        getTraitId(currentTrait),
+      )
       const restoredTrait = {
         ...currentTrait,
         category: backupCategory.name,
@@ -4499,7 +4534,7 @@ function restoreProjectBackup(source, backup) {
       extraTraits.has(trait) ? { ...trait, category: backupCategory.name } : restoredTraitByCurrentTrait.get(trait),
     )
 
-    restoredCategoryByCurrentCategory.set(currentCategory.category, {
+    restoredCategoryByBackupIndex.set(savedCategoryIndex, {
       ...currentCategory.category,
       name: backupCategory.name,
       enabled: backupCategory.enabled !== false,
@@ -4509,18 +4544,25 @@ function restoreProjectBackup(source, backup) {
     })
   }
 
-  const restoredCategories = source.categories.map((category) =>
-    restoredCategoryByCurrentCategory.get(category) || category,
+  const restoredCategories = orderRestoredCategories(
+    backup.source.categories,
+    restoredCategoryByBackupIndex,
+    source.categories.filter((category) => unusedCategories.has(category)),
   )
 
-  const remapTraitId = (id) => restoredIdByBackupId.get(id) || id
+  const remapTraitId = (id, matches) => resolveRestoredTraitId(
+    id,
+    matches,
+    restoredIdByBackupId,
+    restoredIdByBackupLocation,
+  )
   const incompatibilities = (backup.source.incompatibilities || []).map((rule) => ({
-    first: remapTraitId(rule.first),
-    second: remapTraitId(rule.second),
+    first: remapTraitId(rule.first, rule.firstMatches),
+    second: remapTraitId(rule.second, rule.secondMatches),
   }))
   const positionRules = (backup.source.positionRules || []).map((rule) => ({
-    first: remapTraitId(rule.first),
-    second: remapTraitId(rule.second),
+    first: remapTraitId(rule.first, rule.firstMatches),
+    second: remapTraitId(rule.second, rule.secondMatches),
     firstOffsetX: Math.round(Number(rule.firstOffsetX) || 0),
     firstOffsetY: Math.round(Number(rule.firstOffsetY) || 0),
     firstScale: normalizeRuleScale(rule.firstScale),
@@ -4541,11 +4583,11 @@ function restoreProjectBackup(source, backup) {
     positionRules,
     categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
       ...rule,
-      requiredTrait: remapTraitId(rule.requiredTrait),
+      requiredTrait: remapTraitId(rule.requiredTrait, rule.requiredTraitMatches),
     })),
     traitCategoryConflicts: (backup.source.traitCategoryConflicts || []).map((rule) => ({
       ...rule,
-      trait: remapTraitId(rule.trait),
+      trait: remapTraitId(rule.trait, rule.traitMatches),
     })),
     categoryConflicts: backup.source.categoryConflicts || [],
   }
