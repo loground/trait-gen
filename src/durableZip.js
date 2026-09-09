@@ -1,3 +1,5 @@
+import { createOpfsWritable, verifyOpfsWritable } from './opfsWriter.js'
+
 const EXPORT_DIRECTORY = 'trait-forge-exports-v1'
 const LATEST_EXPORT_FILE = 'latest.json'
 
@@ -32,6 +34,7 @@ export async function createDurableZipSession(downloadName) {
 
   const root = await navigator.storage.getDirectory()
   const directory = await root.getDirectoryHandle(EXPORT_DIRECTORY, { create: true })
+  await verifyOpfsWritable(directory)
   const sessionId = `${Date.now()}-${globalThis.crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`
   const workName = `work-${sessionId}`
   const archiveName = `export-${sessionId}.zip`
@@ -43,7 +46,7 @@ export async function createDurableZipSession(downloadName) {
     const fileName = `${String(stagedFileCount).padStart(6, '0')}.bin`
     stagedFileCount += 1
     const handle = await workDirectory.getFileHandle(fileName, { create: true })
-    const writable = await handle.createWritable()
+    const writable = await createOpfsWritable(handle)
     try {
       await writable.write(blob)
       await writable.close()
@@ -56,7 +59,7 @@ export async function createDurableZipSession(downloadName) {
 
   async function finish(zip, onUpdate) {
     const archiveHandle = await directory.getFileHandle(archiveName, { create: true })
-    const writable = await archiveHandle.createWritable()
+    const writable = await createOpfsWritable(archiveHandle)
     try {
       await writeZipToWritable(zip, writable, onUpdate)
       await writable.close()
@@ -126,7 +129,7 @@ export function writeZipToWritable(zip, writable, onUpdate) {
 
 async function writeJsonFile(directory, name, value) {
   const handle = await directory.getFileHandle(name, { create: true })
-  const writable = await handle.createWritable()
+  const writable = await createOpfsWritable(handle)
   try {
     await writable.write(JSON.stringify(value))
     await writable.close()

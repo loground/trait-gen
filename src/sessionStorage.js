@@ -1,3 +1,5 @@
+import { createOpfsWritable } from './opfsWriter.js'
+
 const SESSION_DIRECTORY = 'trait-forge-session-v1'
 const SNAPSHOT_FILE = 'session.json'
 const knownAssetNames = new WeakMap()
@@ -16,7 +18,7 @@ export async function saveSessionSnapshot(snapshot, assetFiles) {
     const handle = await directory.getFileHandle(storageName, { create: true })
     const existing = await handle.getFile()
     if (existing.size === file.size && existing.lastModified >= file.lastModified) continue
-    const writable = await handle.createWritable()
+    const writable = await createOpfsWritable(handle)
     try {
       await writable.write(file)
       await writable.close()
@@ -27,7 +29,7 @@ export async function saveSessionSnapshot(snapshot, assetFiles) {
   }
 
   const snapshotHandle = await directory.getFileHandle(SNAPSHOT_FILE, { create: true })
-  const writable = await snapshotHandle.createWritable()
+  const writable = await createOpfsWritable(snapshotHandle)
   try {
     await writable.write(JSON.stringify(snapshot))
     await writable.close()

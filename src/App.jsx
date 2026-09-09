@@ -233,6 +233,12 @@ function App() {
   }
 
   async function authorizeAndGenerate() {
+    const generationError = getCollectionGenerationError(source)
+    if (generationError) {
+      setAccessMessage(generationError)
+      setAccessOpen(true)
+      return false
+    }
     setAccessBusy(true)
     setAccessMessage('Authorizing one generation credit…')
     try {
@@ -245,11 +251,23 @@ function App() {
       if (!response.ok) throw new Error(await readResponseError(response, 'Could not authorize generation.'))
       const result = await response.json()
       setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
-      setAccessOpen(false)
-      await generateCollection()
+      setAccessMessage('Credit accepted. Starting artwork generation…')
+      const generationResult = await generateCollection({
+        onStart: () => {
+          setAccessOpen(false)
+          setStatus('Credit accepted. Starting artwork generation…')
+        },
+      })
+      if (!generationResult.ok) {
+        setAccessMessage(generationResult.message || 'The credit was accepted, but artwork generation could not start.')
+        setAccessOpen(true)
+        return false
+      }
+      return true
     } catch (error) {
       setAccessMessage(getErrorMessage(error, 'Could not authorize generation.'))
       setAccessOpen(true)
+      return false
     } finally {
       setAccessBusy(false)
     }
@@ -2015,24 +2033,27 @@ function App() {
     }
   }
 
-  async function generateCollection() {
-    if (!(await ensureHolderAccess())) return
+  async function generateCollection(options = {}) {
+    if (!(await ensureHolderAccess())) return { ok: false, message: 'Generation access could not be verified.' }
     if (!source?.categories?.length) {
-      setStatus('Load a PSD or folder set first.')
-      return
+      const message = 'Load a PSD or folder set first.'
+      setStatus(message)
+      return { ok: false, message }
     }
 
     const activeCategories = getActiveCategories(source.categories)
     const rules = getSourceRules(source)
     if (!activeCategories.length) {
-      setStatus('Include at least one folder with a trait chance above 0.')
-      return
+      const message = 'Include at least one folder with a trait chance above 0.'
+      setStatus(message)
+      return { ok: false, message }
     }
 
     const validCombinationInfo = countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
     if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
-      setStatus('No valid editions remain. Remove a trait rule or restore more traits.')
-      return
+      const message = 'No valid editions remain. Remove a trait rule or restore more traits.'
+      setStatus(message)
+      return { ok: false, message }
     }
 
     const targetCount = maxEditionsCapped
@@ -2049,6 +2070,8 @@ function App() {
     setLastZipName('')
     setBusy(true)
     setStatus(`Selecting and validating ${targetCount} editions...`)
+    options.onStart?.()
+    await waitForPaint()
     const zipName = `${slugify(project.name)}-nft-drop.zip`
     let durableZipSession = null
     try {
@@ -2202,9 +2225,12 @@ function App() {
       const totalEditions = combos.length + oneOfOnes.length
       const oneOfOneMessage = oneOfOnes.length ? `, including ${oneOfOnes.length} unique 1/1${oneOfOnes.length === 1 ? '' : 's'}` : ''
       setStatus(`Done. ${totalEditions} ${output.label} images${oneOfOneMessage} and ${METADATA_FILE_NAME} are ready.`)
+      return { ok: true }
     } catch (error) {
       await durableZipSession?.abort()
-      setStatus(getErrorMessage(error, 'Generation failed.'))
+      const message = getErrorMessage(error, 'Generation failed.')
+      setStatus(message)
+      return { ok: false, message }
     } finally {
       setBusy(false)
     }
@@ -3001,8 +3027,8 @@ function App() {
                     <input type="text" autoComplete="off" placeholder="TF-…" value={generationCode} disabled={accessBusy} onChange={(event) => setGenerationCode(event.target.value)} />
                   </label>
                   <button type="submit" disabled={accessBusy || !generationCode.trim()}>
-                    <KeyRound size={16} />
-                    Apply code and generate
+                    {accessBusy ? <Loader2 className="spin" size={16} /> : <KeyRound size={16} />}
+                    {accessBusy ? 'Applying code and starting…' : 'Apply code and generate'}
                   </button>
                 </form>
               </details>
