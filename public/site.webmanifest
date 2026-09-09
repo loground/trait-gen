@@ -1,0 +1,17 @@
+{
+  "name": "Trait Forge",
+  "short_name": "Trait Forge",
+  "description": "Forge layered artwork traits, compatibility rules, rarity settings, images, and collection metadata in your browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fb",
+  "theme_color": "#0d6b67",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

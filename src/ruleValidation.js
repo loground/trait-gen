@@ -37,11 +37,28 @@ export function findCombinationViolation(combo, rules = {}) {
     }
   }
 
+  const selectedTraitIds = new Set(combo.filter((trait) => !trait.isNone).map((trait) => getTraitId(trait)))
+  for (const rule of rules.traitRequirements || []) {
+    if (!selectedTraitIds.has(rule.trait)) continue
+    const allowedCompanions = rule.requiredTraits || []
+    if (!allowedCompanions.some((traitId) => selectedTraitIds.has(traitId))) {
+      return `${rule.trait} can only appear with one of its required traits.`
+    }
+  }
+
   for (const rule of rules.categoryRequirements || []) {
     const categoryApplied = combo.some((trait) => trait.category === rule.category)
     const requiredTraitApplied = combo.some((trait) => getTraitId(trait) === rule.requiredTrait)
     if (categoryApplied && !requiredTraitApplied) {
       return `${rule.category} was applied without its required trait.`
+    }
+  }
+
+  for (const rule of rules.traitCategoryConflicts || []) {
+    const blockingTraitApplied = combo.some((trait) => !trait.isNone && getTraitId(trait) === rule.trait)
+    const blockedCategoryApplied = combo.some((trait) => !trait.isNone && trait.category === rule.category)
+    if (blockingTraitApplied && blockedCategoryApplied) {
+      return `${rule.category} cannot appear with ${rule.trait}.`
     }
   }
 
