@@ -574,23 +574,81 @@ button:disabled {
   font-weight: 800;
 }
 
+.folder-trait-chip.multi-selected {
+  color: #075a55;
+  background: #e9f8f4;
+  border-color: #75b7ad;
+  box-shadow: inset 3px 0 #0d6b67;
+}
+
+.folder-trait-chip input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0d6b67;
+  cursor: pointer;
+}
+
 .folder-trait-chip:active {
   cursor: grabbing;
 }
 
-.folder-trait-chip span {
+.trait-chip-preview {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.trait-chip-preview:hover {
+  background: transparent;
+}
+
+.trait-chip-preview span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.folder-trait-chip small {
+.trait-chip-preview small {
   flex: 0 0 auto;
   color: #8a97a8;
   font-size: 9px;
   font-weight: 750;
   text-transform: uppercase;
+}
+
+.multi-move-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-top: 1px solid #b8d8d2;
+  background: #e9f8f4;
+}
+
+.multi-move-toolbar strong {
+  color: #075a55;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.multi-move-toolbar select,
+.multi-move-toolbar button {
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 11px;
 }
 
 .empty-state {
@@ -1838,6 +1896,31 @@ button:disabled {
   color: #7a8798;
   font-size: 9px;
   white-space: nowrap;
+}
+
+.trait-batch-picker {
+  min-width: 0;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.rule-callout {
+  padding: 12px 14px;
+  border: 1px solid #7bbdb3;
+  border-left: 4px solid #0d6b67;
+  border-radius: 7px;
+  color: #244d4a !important;
+  background: #e9f8f4;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+}
+
+.requirement-rule-list {
+  margin-top: 10px;
+}
+
+.requirement-rule-row > span {
+  line-height: 1.45;
 }
 
 .trait-picker-field {

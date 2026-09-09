@@ -84,7 +84,7 @@ const DEFAULT_PROJECT = {
   canvasFit: 'cover',
 }
 
-const emptyRuleDraft = { first: '', second: '' }
+const emptyRuleDraft = { first: [], second: [], type: 'incompatible' }
 const emptyRuleFolderDraft = { first: '', second: '' }
 const emptyPositionRuleDraft = {
   first: '',
@@ -154,6 +154,7 @@ function App() {
   const [positionRuleFolderDraft, setPositionRuleFolderDraft] = useState(emptyRuleFolderDraft)
   const [conditionDraft, setConditionDraft] = useState(emptyConditionDraft)
   const [folderConflictDraft, setFolderConflictDraft] = useState(emptyFolderConflictDraft)
+  const [selectedMoveTraitKeys, setSelectedMoveTraitKeys] = useState([])
   const psdInputRef = useRef(null)
   const baseInputRef = useRef(null)
   const folderInputRef = useRef(null)
@@ -407,19 +408,20 @@ function App() {
   const managerPreviewTraitKeys = useMemo(
     () => [
       ...new Set([
-        ruleDraft.first,
-        ruleDraft.second,
+        ...ruleDraft.first,
+        ...ruleDraft.second,
         positionRuleDraft.first,
         positionRuleDraft.second,
         conditionDraft.requiredTrait,
         conditionDraft.blockingTrait,
         ...(source?.incompatibilities || []).flatMap((rule) => [rule.first, rule.second]),
+        ...(source?.traitRequirements || []).flatMap((rule) => [rule.trait, ...(rule.requiredTraits || [])]),
         ...(source?.positionRules || []).flatMap((rule) => [rule.first, rule.second]),
         ...(source?.categoryRequirements || []).map((rule) => rule.requiredTrait),
         ...(source?.traitCategoryConflicts || []).map((rule) => rule.trait),
       ].filter(Boolean)),
     ],
-    [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, conditionDraft.blockingTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements, source?.traitCategoryConflicts],
+    [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, conditionDraft.blockingTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements, source?.traitCategoryConflicts, source?.traitRequirements],
   )
 
   async function ensureHolderAccess() {
@@ -587,8 +589,10 @@ function App() {
   useEffect(() => {
     let cancelled = false
     let timer = null
-    const firstTrait = source ? findTraitByKey(source, ruleDraft.first) : null
-    const secondTrait = source ? findTraitByKey(source, ruleDraft.second) : null
+    const firstKey = ruleDraft.first.length === 1 ? ruleDraft.first[0] : ''
+    const secondKey = ruleDraft.second.length === 1 ? ruleDraft.second[0] : ''
+    const firstTrait = source ? findTraitByKey(source, firstKey) : null
+    const secondTrait = source ? findTraitByKey(source, secondKey) : null
 
     if (!traitManagerOpen || !source || !firstTrait || !secondTrait) {
       if (managerPairPreviewUrlRef.current) URL.revokeObjectURL(managerPairPreviewUrlRef.current)
@@ -622,6 +626,14 @@ function App() {
   useEffect(() => {
     setTraitTitleEditing(false)
   }, [selectedCategoryIndex, selectedTraitIndex])
+
+  useEffect(() => {
+    const availableKeys = new Set(source?.categories?.flatMap((category) => category.traits.map(makeTraitKey)) || [])
+    setSelectedMoveTraitKeys((current) => {
+      const next = current.filter((key) => availableKeys.has(key))
+      return next.length === current.length ? current : next
+    })
+  }, [source])
 
   useEffect(() => {
     let cancelled = false
@@ -721,6 +733,7 @@ function App() {
         categoryRequirements: [],
         traitCategoryConflicts: [],
         categoryConflicts: [],
+        traitRequirements: [],
         baseFile: file,
       }
       setSource(parsed)
@@ -1321,6 +1334,10 @@ function App() {
       ...source,
       categories,
       incompatibilities: (source.incompatibilities || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
+      traitRequirements: (source.traitRequirements || [])
+        .filter((rule) => rule.trait !== traitKey)
+        .map((rule) => ({ ...rule, requiredTraits: rule.requiredTraits.filter((key) => key !== traitKey) }))
+        .filter((rule) => rule.requiredTraits.length),
       positionRules: (source.positionRules || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
       categoryRequirements: (source.categoryRequirements || []).filter((rule) => rule.requiredTrait !== traitKey),
       traitCategoryConflicts: (source.traitCategoryConflicts || []).filter((rule) => rule.trait !== traitKey),
@@ -1392,34 +1409,47 @@ function App() {
   }
 
   async function moveTraitToCategory(fromCategoryIndex, traitIndex, toCategoryIndex) {
-    if (!source || busy || fromCategoryIndex === toCategoryIndex) return
-    const fromCategory = source.categories[fromCategoryIndex]
-    const toCategory = source.categories[toCategoryIndex]
-    const trait = fromCategory?.traits[traitIndex]
-    if (!trait || !toCategory) return
+    const trait = source?.categories[fromCategoryIndex]?.traits[traitIndex]
+    if (!trait) return
+    await moveTraitsToCategory([makeTraitKey(trait)], toCategoryIndex)
+  }
 
-    const categories = source.categories.map((category, categoryIndex) => {
-      if (categoryIndex === fromCategoryIndex) {
-        return { ...category, traits: category.traits.filter((_, index) => index !== traitIndex) }
-      }
-      if (categoryIndex === toCategoryIndex) {
-        return { ...category, traits: [...category.traits, { ...trait, category: category.name }] }
-      }
-      return category
-    })
-    const traitKey = makeTraitKey(trait)
+  async function moveTraitsToCategory(traitKeys, toCategoryIndex) {
+    if (!source || busy || !source.categories[toCategoryIndex]) return
+    const selectedKeys = new Set(traitKeys)
+    const toCategory = source.categories[toCategoryIndex]
+    const movingTraits = source.categories.flatMap((category, categoryIndex) => (
+      categoryIndex === toCategoryIndex
+        ? []
+        : category.traits.filter((trait) => selectedKeys.has(makeTraitKey(trait)))
+    ))
+    if (!movingTraits.length) return
+    const movedKeys = new Set(movingTraits.map(makeTraitKey))
+    const categories = source.categories.map((category, categoryIndex) => ({
+      ...category,
+      traits: categoryIndex === toCategoryIndex
+        ? [...category.traits, ...movingTraits.map((trait) => ({ ...trait, category: category.name }))]
+        : category.traits.filter((trait) => !movedKeys.has(makeTraitKey(trait))),
+    }))
     const nextSource = {
       ...source,
       categories,
       traitCategoryConflicts: (source.traitCategoryConflicts || []).filter((rule) => (
-        rule.trait !== traitKey || rule.category !== toCategory.name
+        !movedKeys.has(rule.trait) || rule.category !== toCategory.name
       )),
     }
     setSource(nextSource)
+    setSelectedMoveTraitKeys([])
     setSelectedCategoryIndex(toCategoryIndex)
     setSelectedTraitIndex(Math.max(0, categories[toCategoryIndex].traits.length - 1))
-    setStatus(`Moved ${getTraitMetadataName(trait)} from ${fromCategory.name} to ${toCategory.name}.`)
+    setStatus(`Moved ${movingTraits.length} ${movingTraits.length === 1 ? 'trait' : 'traits'} to ${toCategory.name}.`)
     await renderPreview(nextSource)
+  }
+
+  function toggleMoveTraitSelection(traitKey) {
+    setSelectedMoveTraitKeys((current) => current.includes(traitKey)
+      ? current.filter((key) => key !== traitKey)
+      : [...current, traitKey])
   }
 
   function startTraitFolderDrag(event, categoryIndex, traitIndex) {
@@ -1428,7 +1458,12 @@ function App() {
       return
     }
     traitFolderDragOccurredRef.current = true
-    draggedTraitRef.current = { categoryIndex, traitIndex }
+    const traitKey = makeTraitKey(source.categories[categoryIndex].traits[traitIndex])
+    draggedTraitRef.current = {
+      categoryIndex,
+      traitIndex,
+      traitKeys: selectedMoveTraitKeys.includes(traitKey) ? selectedMoveTraitKeys : [traitKey],
+    }
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', `${categoryIndex}:${traitIndex}`)
   }
@@ -1441,7 +1476,7 @@ function App() {
       return
     }
     const draggedTrait = draggedTraitRef.current
-    if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
+    if (!draggedTrait || busy) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'move'
     setTraitDropCategoryIndex(categoryIndex)
@@ -1466,26 +1501,59 @@ function App() {
     }
     const draggedTrait = draggedTraitRef.current
     finishTraitFolderDrag()
-    if (!draggedTrait || draggedTrait.categoryIndex === categoryIndex || busy) return
+    if (!draggedTrait || busy) return
     setExpandedCategoryIndices((current) => (current.includes(categoryIndex) ? current : [...current, categoryIndex]))
-    await moveTraitToCategory(draggedTrait.categoryIndex, draggedTrait.traitIndex, categoryIndex)
+    await moveTraitsToCategory(draggedTrait.traitKeys, categoryIndex)
   }
 
-  async function addIncompatibility() {
-    if (!source || busy || !ruleDraft.first || !ruleDraft.second || ruleDraft.first === ruleDraft.second) return
-    const [first, second] = normalizeRule(ruleDraft.first, ruleDraft.second)
-    const ruleKey = `${first}||${second}`
-    const existingRules = source.incompatibilities || []
-    if (existingRules.some((rule) => makeRuleKey(rule) === ruleKey)) {
-      setStatus('That trait rule already exists.')
+  function toggleTraitRuleSelection(side, traitKey) {
+    setRuleDraft((current) => ({
+      ...current,
+      [side]: current[side].includes(traitKey)
+        ? current[side].filter((key) => key !== traitKey)
+        : [...current[side], traitKey],
+    }))
+  }
+
+  async function addTraitRules() {
+    if (!source || busy || !ruleDraft.first.length || !ruleDraft.second.length) return
+    let nextSource
+    let addedCount = 0
+    if (ruleDraft.type === 'required') {
+      const existingRules = source.traitRequirements || []
+      const existingTriggers = new Set(existingRules.map((rule) => rule.trait))
+      const additions = ruleDraft.first.flatMap((trait) => {
+        if (existingTriggers.has(trait)) return []
+        const requiredTraits = [...new Set(ruleDraft.second.filter((key) => key !== trait))]
+        return requiredTraits.length ? [{ trait, requiredTraits }] : []
+      })
+      addedCount = additions.length
+      nextSource = { ...source, traitRequirements: [...existingRules, ...additions] }
+    } else {
+      const existingRules = source.incompatibilities || []
+      const existingKeys = new Set(existingRules.map(makeRuleKey))
+      const additions = []
+      for (const firstKey of ruleDraft.first) {
+        for (const secondKey of ruleDraft.second) {
+          if (firstKey === secondKey) continue
+          const [first, second] = normalizeRule(firstKey, secondKey)
+          const key = `${first}||${second}`
+          if (existingKeys.has(key)) continue
+          existingKeys.add(key)
+          additions.push({ first, second })
+        }
+      }
+      addedCount = additions.length
+      nextSource = { ...source, incompatibilities: [...existingRules, ...additions] }
+    }
+    if (!addedCount) {
+      setStatus('Every selected rule already exists or selects the same trait on both sides.')
       return
     }
-
-    const nextSource = { ...source, incompatibilities: [...existingRules, { first, second }] }
     setSource(nextSource)
-    setRuleDraft(emptyRuleDraft)
+    setRuleDraft({ ...emptyRuleDraft, type: ruleDraft.type })
     setRuleFolderDraft(emptyRuleFolderDraft)
-    setStatus('Trait rule added.')
+    setStatus(`Added ${addedCount} trait ${addedCount === 1 ? 'rule' : 'rules'}.`)
     await renderPreview(nextSource)
   }
 
@@ -1497,6 +1565,17 @@ function App() {
     }
     setSource(nextSource)
     setStatus('Trait rule removed.')
+    await renderPreview(nextSource)
+  }
+
+  async function removeTraitRequirement(ruleIndex) {
+    if (!source || busy) return
+    const nextSource = {
+      ...source,
+      traitRequirements: (source.traitRequirements || []).filter((_, index) => index !== ruleIndex),
+    }
+    setSource(nextSource)
+    setStatus('Can-only-appear-with rule removed.')
     await renderPreview(nextSource)
   }
 
@@ -2119,6 +2198,7 @@ function App() {
             requestedEditions: targetCount,
             validatedEditions: combos.length,
             incompatibilityRules: rules.incompatibilities.length,
+            requiredCompanionRules: rules.traitRequirements.length,
             positionRules: (source.positionRules || []).length,
             categoryRequirements: rules.categoryRequirements.length,
             traitCategoryConflicts: rules.traitCategoryConflicts.length,
@@ -2309,6 +2389,7 @@ function App() {
   const traitOptionMap = new Map(traitOptions.map((trait) => [trait.key, trait.label]))
 
   const incompatibilities = source?.incompatibilities || []
+  const traitRequirements = source?.traitRequirements || []
   const positionRules = source?.positionRules || []
   const categoryRequirements = source?.categoryRequirements || []
   const traitCategoryConflicts = source?.traitCategoryConflicts || []
@@ -2492,6 +2573,23 @@ function App() {
                 </button>
               </div>
             </div>
+            {!!selectedMoveTraitKeys.length && source && (
+              <div className="multi-move-toolbar">
+                <strong>{selectedMoveTraitKeys.length} selected</strong>
+                <select
+                  value=""
+                  disabled={busy}
+                  aria-label="Move selected traits to folder"
+                  onChange={(event) => moveTraitsToCategory(selectedMoveTraitKeys, Number(event.target.value))}
+                >
+                  <option value="">Move selected to…</option>
+                  {source.categories.map((category, categoryIndex) => (
+                    <option value={categoryIndex} key={`move-${category.name}-${categoryIndex}`}>{category.name}</option>
+                  ))}
+                </select>
+                <button type="button" disabled={busy} onClick={() => setSelectedMoveTraitKeys([])}>Clear</button>
+              </div>
+            )}
             {sourceSummary.length ? (
               sourceSummary.map((item, index) => (
                 <div
@@ -2558,24 +2656,24 @@ function App() {
                     <div className="folder-trait-list" aria-label={`Traits in ${item.name}`}>
                       {source.categories[index].traits.length ? source.categories[index].traits.map((trait, traitIndex) => (
                         <div
-                          className="folder-trait-chip"
+                          className={`folder-trait-chip ${selectedMoveTraitKeys.includes(makeTraitKey(trait)) ? 'multi-selected' : ''}`}
                           draggable={!busy}
                           onDragStart={(event) => startTraitFolderDrag(event, index, traitIndex)}
                           onDragEnd={finishTraitFolderDrag}
-                          onClick={() => previewSingleTrait(index, traitIndex)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault()
-                              previewSingleTrait(index, traitIndex)
-                            }
-                          }}
-                          role="button"
-                          tabIndex={0}
                           title={`Drag ${getTraitMetadataName(trait)} to another folder`}
                           key={`${getTraitId(trait)}-${traitIndex}`}
                         >
-                          <span>{getTraitMetadataName(trait)}</span>
-                          <small>Drag to move</small>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${getTraitMetadataName(trait)} for moving`}
+                            checked={selectedMoveTraitKeys.includes(makeTraitKey(trait))}
+                            disabled={busy}
+                            onChange={() => toggleMoveTraitSelection(makeTraitKey(trait))}
+                          />
+                          <button className="trait-chip-preview" type="button" disabled={busy} onClick={() => previewSingleTrait(index, traitIndex)}>
+                            <span>{getTraitMetadataName(trait)}</span>
+                            <small>{selectedMoveTraitKeys.includes(makeTraitKey(trait)) ? 'Selected' : 'Preview'}</small>
+                          </button>
                         </div>
                       )) : <p>This folder has no traits. Drag traits here from another folder.</p>}
                     </div>
@@ -2610,7 +2708,7 @@ function App() {
                   <Ban size={15} />
                   Trait manager
                 </span>
-                <strong>{incompatibilities.length + positionRules.length + categoryRequirements.length + traitCategoryConflicts.length + categoryConflicts.length}</strong>
+                <strong>{incompatibilities.length + traitRequirements.length + positionRules.length + categoryRequirements.length + traitCategoryConflicts.length + categoryConflicts.length}</strong>
               </div>
               <button
                 className="primary-action"
@@ -3482,8 +3580,8 @@ function App() {
                 onClick={() => setActiveRuleManagerTab('trait-pairs')}
               >
                 <Ban size={16} />
-                <span>Trait pairs</span>
-                <strong>{incompatibilities.length}</strong>
+                <span>Trait rules</span>
+                <strong>{incompatibilities.length + traitRequirements.length}</strong>
               </button>
               <button
                 className={activeRuleManagerTab === 'positions' ? 'active' : ''}
@@ -3522,20 +3620,36 @@ function App() {
                 <div className="rule-manager-title">
                   <span>
                     <Ban size={16} />
-                    Trait pairs
+                    Trait rules
                   </span>
-                  <strong>{incompatibilities.length}</strong>
+                  <strong>{incompatibilities.length + traitRequirements.length}</strong>
                 </div>
-                <p>Select two individual traits that must never appear together.</p>
+                <p>Select one or more traits on each side. One click creates every selected combination.</p>
+                <div className="segmented" aria-label="Trait rule type">
+                  <button
+                    className={ruleDraft.type === 'incompatible' ? 'active' : ''}
+                    type="button"
+                    onClick={() => setRuleDraft((current) => ({ ...current, type: 'incompatible' }))}
+                  >
+                    Cannot appear with
+                  </button>
+                  <button
+                    className={ruleDraft.type === 'required' ? 'active' : ''}
+                    type="button"
+                    onClick={() => setRuleDraft((current) => ({ ...current, type: 'required' }))}
+                  >
+                    Can only appear with
+                  </button>
+                </div>
                 <div className="trait-picker-field">
                   <label>
-                    Folder
+                    Traits from folder
                     <select
                       value={ruleFolderDraft.first}
                       disabled={busy}
                       onChange={(event) => {
                         setRuleFolderDraft((current) => ({ ...current, first: event.target.value }))
-                        setRuleDraft((current) => ({ ...current, first: '' }))
+                        setRuleDraft((current) => ({ ...current, first: [] }))
                       }}
                     >
                       <option value="">Choose folder</option>
@@ -3544,24 +3658,28 @@ function App() {
                       ))}
                     </select>
                   </label>
-                  <label>
-                    First trait
-                    <select value={ruleDraft.first} disabled={busy || ruleFolderDraft.first === ''} onChange={(event) => setRuleDraft((current) => ({ ...current, first: event.target.value }))}>
-                      <option value="">Choose trait</option>
-                      {(ruleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(ruleFolderDraft.first)] || []).map((trait) => <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>)}
-                    </select>
-                  </label>
-                  <ManagerTraitPreview traitKey={ruleDraft.first} url={managerPreviewUrls[ruleDraft.first]} label={traitOptionMap.get(ruleDraft.first)} />
+                  <fieldset className="multi-rule-picker trait-batch-picker">
+                    <legend>Choose one or more traits</legend>
+                    <div className="multi-rule-options">
+                      {(ruleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(ruleFolderDraft.first)] || []).map((trait) => (
+                        <label className="multi-rule-option" key={`first-${trait.key}`}>
+                          <input type="checkbox" checked={ruleDraft.first.includes(trait.key)} disabled={busy} onChange={() => toggleTraitRuleSelection('first', trait.key)} />
+                          <span>{trait.traitLabel}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  {ruleDraft.first.length === 1 && <ManagerTraitPreview traitKey={ruleDraft.first[0]} url={managerPreviewUrls[ruleDraft.first[0]]} label={traitOptionMap.get(ruleDraft.first[0])} />}
                 </div>
                 <div className="trait-picker-field">
                   <label>
-                    Folder
+                    {ruleDraft.type === 'required' ? 'Required companion folder' : 'Cannot appear with folder'}
                     <select
                       value={ruleFolderDraft.second}
                       disabled={busy}
                       onChange={(event) => {
                         setRuleFolderDraft((current) => ({ ...current, second: event.target.value }))
-                        setRuleDraft((current) => ({ ...current, second: '' }))
+                        setRuleDraft((current) => ({ ...current, second: [] }))
                       }}
                     >
                       <option value="">Choose folder</option>
@@ -3570,16 +3688,20 @@ function App() {
                       ))}
                     </select>
                   </label>
-                  <label>
-                    Cannot appear with
-                    <select value={ruleDraft.second} disabled={busy || ruleFolderDraft.second === ''} onChange={(event) => setRuleDraft((current) => ({ ...current, second: event.target.value }))}>
-                      <option value="">Choose trait</option>
-                      {(ruleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(ruleFolderDraft.second)] || []).map((trait) => <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>)}
-                    </select>
-                  </label>
-                  <ManagerTraitPreview traitKey={ruleDraft.second} url={managerPreviewUrls[ruleDraft.second]} label={traitOptionMap.get(ruleDraft.second)} />
+                  <fieldset className="multi-rule-picker trait-batch-picker">
+                    <legend>{ruleDraft.type === 'required' ? 'At least one of these must appear' : 'Choose one or more traits'}</legend>
+                    <div className="multi-rule-options">
+                      {(ruleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(ruleFolderDraft.second)] || []).map((trait) => (
+                        <label className="multi-rule-option" key={`second-${trait.key}`}>
+                          <input type="checkbox" checked={ruleDraft.second.includes(trait.key)} disabled={busy} onChange={() => toggleTraitRuleSelection('second', trait.key)} />
+                          <span>{trait.traitLabel}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  {ruleDraft.second.length === 1 && <ManagerTraitPreview traitKey={ruleDraft.second[0]} url={managerPreviewUrls[ruleDraft.second[0]]} label={traitOptionMap.get(ruleDraft.second[0])} />}
                 </div>
-                {ruleDraft.first && ruleDraft.second && (
+                {ruleDraft.first.length === 1 && ruleDraft.second.length === 1 && (
                   <div className="pair-position-preview">
                     <div className="pair-position-preview-header">
                       <span>Selected pair preview</span>
@@ -3594,9 +3716,9 @@ function App() {
                     </div>
                   </div>
                 )}
-                <button className="rule-add" type="button" disabled={busy || !ruleDraft.first || !ruleDraft.second || ruleDraft.first === ruleDraft.second} onClick={addIncompatibility}>
+                <button className="rule-add" type="button" disabled={busy || !ruleDraft.first.length || !ruleDraft.second.length} onClick={addTraitRules}>
                   <Ban size={16} />
-                  Add trait rule
+                  Add selected {ruleDraft.type === 'required' ? 'required companion' : 'incompatibility'} rules
                 </button>
                 {incompatibilities.length ? (
                   <div className="rule-list">
@@ -3613,7 +3735,22 @@ function App() {
                       </div>
                     ))}
                   </div>
-                ) : <p className="manager-empty">No trait-pair rules yet.</p>}
+                ) : <p className="manager-empty">No cannot-appear-with rules yet.</p>}
+                {!!traitRequirements.length && (
+                  <div className="rule-list requirement-rule-list">
+                    {traitRequirements.map((rule, index) => (
+                      <div className="rule-row requirement-rule-row" key={`${rule.trait}-${rule.requiredTraits.join('|')}`}>
+                        <span>
+                          <strong>{formatTraitKey(rule.trait, traitOptionMap)}</strong> can only appear with at least one of:{' '}
+                          {rule.requiredTraits.map((key) => formatTraitKey(key, traitOptionMap)).join(', ')}
+                        </span>
+                        <button type="button" disabled={busy} aria-label="Remove required companion rule" onClick={() => removeTraitRequirement(index)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </section>
               )}
 
@@ -3858,7 +3995,7 @@ function App() {
                   </div>
                 ) : <p className="manager-empty">No conditional folder rules yet.</p>}
                 <div className="rule-divider" />
-                <p>Or choose one item that prevents every item in selected folders from appearing.</p>
+                <p className="rule-callout"><strong>Block entire folders:</strong> choose a trait, then select every folder whose items must disappear whenever that trait appears.</p>
                 <div className="trait-picker-field">
                   <label>
                     When this item appears
@@ -4304,6 +4441,14 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
         firstMatches: matchesForId(rule.first),
         secondMatches: matchesForId(rule.second),
       })),
+      traitRequirements: (source.traitRequirements || []).map((rule) => ({
+        trait: rule.trait,
+        traitMatches: matchesForId(rule.trait),
+        requiredTraits: rule.requiredTraits.map((requiredTrait) => ({
+          trait: requiredTrait,
+          matches: matchesForId(requiredTrait),
+        })),
+      })),
       positionRules: (source.positionRules || []).map((rule) => ({
         ...rule,
         firstMatches: matchesForId(rule.first),
@@ -4473,6 +4618,7 @@ async function restoreSourceFromSession({ snapshot, assets }) {
       categoryRequirements: [],
       traitCategoryConflicts: [],
       categoryConflicts: [],
+      traitRequirements: [],
     }
   }
 
@@ -4596,6 +4742,14 @@ function restoreProjectBackup(source, backup) {
     secondOffsetY: Math.round(Number(rule.secondOffsetY) || 0),
     secondScale: normalizeRuleScale(rule.secondScale),
   }))
+  const traitRequirements = (backup.source.traitRequirements || []).map((rule) => ({
+    trait: remapTraitId(rule.trait, rule.traitMatches),
+    requiredTraits: (rule.requiredTraits || []).map((required) => (
+      typeof required === 'string'
+        ? remapTraitId(required)
+        : remapTraitId(required.trait, required.matches)
+    )),
+  }))
   const restoredSource = {
     ...source,
     categories: restoredCategories,
@@ -4606,6 +4760,7 @@ function restoreProjectBackup(source, backup) {
       return backupArtwork ? { ...artwork, name: backupArtwork.name } : artwork
     }),
     incompatibilities,
+    traitRequirements,
     positionRules,
     categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
       ...rule,
@@ -4629,7 +4784,7 @@ function restoreProjectBackup(source, backup) {
     traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
     skippedTraitCount: restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
       backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
-    ruleCount: incompatibilities.length + positionRules.length +
+    ruleCount: incompatibilities.length + traitRequirements.length + positionRules.length +
       (restoredSource.categoryRequirements || []).length + (restoredSource.traitCategoryConflicts || []).length +
       (restoredSource.categoryConflicts || []).length,
   }
@@ -4702,6 +4857,11 @@ function findInvalidRuleReference(source) {
       return 'The backup contains a position rule that does not match the loaded source.'
     }
   }
+  for (const rule of source.traitRequirements || []) {
+    if (!traitIds.has(rule.trait) || !(rule.requiredTraits || []).length || rule.requiredTraits.some((id) => !traitIds.has(id))) {
+      return 'The backup contains a required companion rule that does not match the loaded source.'
+    }
+  }
   for (const rule of source.categoryRequirements || []) {
     if (!source.categories.some((category) => category.name === rule.category) || !traitIds.has(rule.requiredTrait)) {
       return 'The backup contains a folder rule that does not match the loaded source.'
@@ -4759,6 +4919,7 @@ function parsePsd(psd, fileName) {
     categoryRequirements: [],
     traitCategoryConflicts: [],
     categoryConflicts: [],
+    traitRequirements: [],
   }
 }
 
@@ -4884,6 +5045,7 @@ async function parseFolders(files, baseFile) {
     categoryRequirements: [],
     traitCategoryConflicts: [],
     categoryConflicts: [],
+    traitRequirements: [],
   }
 }
 
@@ -5393,6 +5555,7 @@ function formatCsvCell(value) {
 function getSourceRules(source) {
   return {
     incompatibilities: source?.incompatibilities || [],
+    traitRequirements: source?.traitRequirements || [],
     categoryRequirements: source?.categoryRequirements || [],
     traitCategoryConflicts: source?.traitCategoryConflicts || [],
     categoryConflicts: source?.categoryConflicts || [],

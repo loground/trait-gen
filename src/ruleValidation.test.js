@@ -26,3 +26,17 @@ test('a none choice in the blocked folder is allowed', () => {
 
   assert.equal(findCombinationViolation([laserEyes, none], rules), '')
 })
+
+test('a can-only-appear-with rule requires at least one selected companion', () => {
+  const rules = { traitRequirements: [{ trait: laserEyes.id, requiredTraits: [hat.id, smile.id] }] }
+
+  assert.match(findCombinationViolation([laserEyes], rules), /can only appear with/)
+  assert.equal(findCombinationViolation([laserEyes, hat], rules), '')
+  assert.equal(findCombinationViolation([laserEyes, smile], rules), '')
+})
+
+test('a can-only-appear-with rule does not affect combinations without its trigger', () => {
+  const rules = { traitRequirements: [{ trait: laserEyes.id, requiredTraits: [hat.id] }] }
+
+  assert.equal(findCombinationViolation([smile], rules), '')
+})
