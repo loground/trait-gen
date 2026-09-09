@@ -87,5 +87,11 @@ browser.
 
 ## Generation model
 
-Image composition runs in the browser. Large collections should be generated on
-a capable desktop browser because the work can require significant memory and CPU.
+Image composition runs in the browser. When the browser supports origin-private
+file storage, rendered images and ZIP output are streamed through on-device
+storage to keep large exports from exhausting memory. A completed ZIP is restored
+after an accidental reload. The current source files, project settings, rarities,
+trait edits, and rules are also autosaved to the browser's private on-device
+storage and reconstructed after a refresh. Older browsers use an in-memory
+fallback, so large collections still work best in a current browser with ample
+free device storage.

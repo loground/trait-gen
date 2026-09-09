@@ -35,6 +35,8 @@ import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
 import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from './folderImport.js'
 import { spreadSimilarCombinations } from './combinationOrder.js'
+import { createDurableZipSession, restoreLatestDurableZip } from './durableZip.js'
+import { getSessionAssetName, loadSessionSnapshot, saveSessionSnapshot } from './sessionStorage.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -171,6 +173,11 @@ function App() {
   const draggedTraitRef = useRef(null)
   const traitFolderDragOccurredRef = useRef(false)
   const maxEditionsCacheRef = useRef({ key: null, value: { count: 0, capped: false } })
+  const lastZipUrlRef = useRef('')
+  const autosaveTimerRef = useRef(null)
+  const autosaveChainRef = useRef(Promise.resolve())
+  const autosaveWarningShownRef = useRef(false)
+  const restoringSessionRef = useRef(true)
 
   function acceptIntro() {
     writeStoredValue(INTRO_ACCEPTED_KEY, 'yes')
@@ -408,6 +415,87 @@ function App() {
     loadAccount()
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    restoreLatestDurableZip().then((savedZip) => {
+      if (cancelled || !savedZip || lastZipUrlRef.current) return
+      const url = URL.createObjectURL(savedZip.file)
+      lastZipUrlRef.current = url
+      setLastZipUrl(url)
+      setLastZipName(savedZip.name)
+      setStatus(`Recovered ${savedZip.name} from on-device storage. It is ready to download.`)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    loadSessionSnapshot().then(async (savedSession) => {
+      if (cancelled || !savedSession) return
+      setBusy(true)
+      setStatus('Restoring your last autosaved session…')
+      try {
+        const restored = await restoreSourceFromSession(savedSession)
+        if (cancelled) return
+        baseFileRef.current = restored.baseFile
+        setProject(restored.project)
+        setSource(restored.source)
+        setSelectedCategoryIndex(0)
+        setExpandedCategoryIndices([])
+        const previewBlob = await renderSourcePreviewBlob(restored.source, restored.project)
+        if (cancelled) return
+        const previewObjectUrl = URL.createObjectURL(previewBlob)
+        setPreviewUrl((current) => {
+          if (current) URL.revokeObjectURL(current)
+          return previewObjectUrl
+        })
+        if (!cancelled) setStatus(`Restored your autosaved session from ${formatSavedTime(restored.savedAt)}.`)
+      } catch (error) {
+        if (!cancelled) setStatus(getErrorMessage(error, 'Could not restore the autosaved session. Load the source again to continue.'))
+      } finally {
+        restoringSessionRef.current = false
+        if (!cancelled) setBusy(false)
+      }
+    }).catch(() => {
+      restoringSessionRef.current = false
+    }).finally(() => {
+      restoringSessionRef.current = false
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!source || restoringSessionRef.current) return undefined
+    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null
+      const session = buildSessionSnapshot(source, project)
+      if (!session) return
+      autosaveChainRef.current = autosaveChainRef.current
+        .catch(() => {})
+        .then(() => saveSessionSnapshot(session.snapshot, session.assets))
+        .then((saved) => {
+          if (saved) autosaveWarningShownRef.current = false
+          else if (!autosaveWarningShownRef.current) {
+            autosaveWarningShownRef.current = true
+            setStatus('This browser does not support automatic session recovery. Download project backups regularly.')
+          }
+        })
+        .catch(() => {
+          if (autosaveWarningShownRef.current) return
+          autosaveWarningShownRef.current = true
+          setStatus('Could not autosave this session. Check available device storage and download a project backup.')
+        })
+    }, 500)
+    return () => {
+      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
+    }
+  }, [source, project])
+
 
   useEffect(
     () => () => {
@@ -418,6 +506,8 @@ function App() {
       if (traitEditorPreviewUrlRef.current) URL.revokeObjectURL(traitEditorPreviewUrlRef.current)
       samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
       if (sampleCollageUrlRef.current) URL.revokeObjectURL(sampleCollageUrlRef.current)
+      if (lastZipUrlRef.current) URL.revokeObjectURL(lastZipUrlRef.current)
+      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current)
     },
     [],
   )
@@ -572,19 +662,8 @@ function App() {
           throw new Error('PSD import cancelled. You can still use Base image + Trait folders for very large artwork.')
         }
       }
-      const buffer = await file.arrayBuffer()
-      const psd = readPsd(buffer, {
-        useRawData: true,
-        skipCompositeImageData: true,
-        skipThumbnail: true,
-        skipLinkedFilesData: true,
-      })
-      const estimatedBitmapBytes = estimatePsdBitmapBytes(psd)
-      const lowMemoryMode = estimatedBitmapBytes > RETAINED_PSD_BITMAP_LIMIT
-      if (!lowMemoryMode) decodePsdLayerPixels(psd.children)
-      const parsed = parsePsd(psd, file.name)
-      parsed.lowMemoryMode = lowMemoryMode
-      parsed.estimatedBitmapBytes = estimatedBitmapBytes
+      const parsed = await parsePsdSourceFile(file)
+      const { lowMemoryMode, estimatedBitmapBytes } = parsed
       setSource(parsed)
       setExpandedCategoryIndices([])
       setSelectedCategoryIndex(0)
@@ -623,6 +702,7 @@ function App() {
         categoryRequirements: [],
         traitCategoryConflicts: [],
         categoryConflicts: [],
+        baseFile: file,
       }
       setSource(parsed)
       setExpandedCategoryIndices([])
@@ -802,6 +882,7 @@ function App() {
           name: originalName,
           fileName: file.name,
           image: await loadImageFromFile(file),
+          file,
         })
       }
       const nextSource = { ...source, oneOfOnes: [...(source.oneOfOnes || []), ...additions] }
@@ -890,6 +971,7 @@ function App() {
           weight: 1,
           image: await loadImageFromFile(file),
           fileName: file.name,
+          file,
         })
       }
 
@@ -918,7 +1000,6 @@ function App() {
   }
 
   async function renderPreview(activeSource = source) {
-    const categories = getActiveCategories(activeSource?.categories || [])
     if (!activeSource) return
     if (previewTimerRef.current) {
       window.clearTimeout(previewTimerRef.current)
@@ -926,8 +1007,7 @@ function App() {
     }
     const requestId = previewRequestRef.current + 1
     previewRequestRef.current = requestId
-    const combo = categories.length ? buildRandomCombination(categories, `${project.seed}-preview`, 0, getSourceRules(activeSource)) : []
-    const blob = await renderArtwork(activeSource, combo, { renderMaxDimension: PREVIEW_MAX_DIMENSION })
+    const blob = await renderSourcePreviewBlob(activeSource, project)
     if (requestId !== previewRequestRef.current) return
     const url = URL.createObjectURL(blob)
     setPreviewUrl((current) => {
@@ -1962,14 +2042,23 @@ function App() {
     const maxDimension = clampNumber(project.maxDimension, 0, 12000)
     const canvasRatio = getProjectCanvasRatio(project)
 
-    setLastZipUrl((current) => {
-      if (current) URL.revokeObjectURL(current)
-      return ''
-    })
+    if (lastZipUrlRef.current) URL.revokeObjectURL(lastZipUrlRef.current)
+    lastZipUrlRef.current = ''
+    setLastZipUrl('')
     setLastZipName('')
     setBusy(true)
     setStatus(`Selecting and validating ${targetCount} editions...`)
+    const zipName = `${slugify(project.name)}-nft-drop.zip`
+    let durableZipSession = null
     try {
+      try {
+        durableZipSession = await createDurableZipSession(zipName)
+      } catch {
+        // Private file-system storage can be unavailable in private browsing or
+        // under a restrictive quota. The established in-memory path still works
+        // for smaller exports and older browsers.
+        durableZipSession = null
+      }
       const zip = new JSZip()
       const images = zip.folder('images')
       const oneOfOnes = source.oneOfOnes || []
@@ -2041,7 +2130,8 @@ function App() {
             trait_type: trait.category,
             value: getTraitMetadataName(trait),
           }))
-        images.file(imageFileName, blob)
+        const zipImage = durableZipSession ? await durableZipSession.stageBlob(blob) : blob
+        images.file(imageFileName, zipImage)
         const tokenId = index + 1
         metadataRows.push(buildMetadataCsvRow(tokenId, imageFileName, project, metadataCategories, combos[index]))
         manifest.push({ edition, tokenId, image: `images/${imageFileName}`, metadata: METADATA_FILE_NAME, attributes })
@@ -2068,7 +2158,8 @@ function App() {
           { trait_type: ONE_OF_ONE_TRAIT_TYPE, value: oneOfOneName },
           { trait_type: RARITY_TRAIT_TYPE, value: ONE_OF_ONE_TRAIT_TYPE },
         ]
-        images.file(imageFileName, blob)
+        const zipImage = durableZipSession ? await durableZipSession.stageBlob(blob) : blob
+        images.file(imageFileName, zipImage)
         metadataRows.push(buildOneOfOneMetadataCsvRow(edition, imageFileName, project, metadataCategories, oneOfOneName))
         manifest.push({
           edition,
@@ -2088,34 +2179,30 @@ function App() {
       await waitForPaint()
       let lastPackagingPercent = -1
       let lastPackagingUpdate = 0
-      const zipBlob = await zip.generateAsync(
-        {
-          type: 'blob',
-          streamFiles: true,
-          // PNG, JPEG and WebP data is already compressed. Deflating it again is
-          // expensive and can make large exports appear frozen on mobile Safari.
-          compression: 'STORE',
-        },
-        ({ percent }) => {
-          const nextPercent = Math.min(100, Math.floor(percent))
-          const now = Date.now()
-          if (nextPercent === lastPackagingPercent || (nextPercent < 100 && now - lastPackagingUpdate < 200)) return
-          lastPackagingPercent = nextPercent
-          lastPackagingUpdate = now
-          setStatus(`Packaging ZIP… ${nextPercent}%`)
-        },
-      )
+      const updatePackagingProgress = ({ percent }) => {
+        const nextPercent = Math.min(100, Math.floor(percent))
+        const now = Date.now()
+        if (nextPercent === lastPackagingPercent || (nextPercent < 100 && now - lastPackagingUpdate < 200)) return
+        lastPackagingPercent = nextPercent
+        lastPackagingUpdate = now
+        setStatus(`Packaging ZIP… ${nextPercent}%`)
+      }
+      const zipBlob = durableZipSession
+        ? await durableZipSession.finish(zip, updatePackagingProgress)
+        : await zip.generateAsync(
+            { type: 'blob', streamFiles: true, compression: 'STORE' },
+            updatePackagingProgress,
+          )
       const zipUrl = URL.createObjectURL(zipBlob)
-      const zipName = `${slugify(project.name)}-nft-drop.zip`
-      setLastZipUrl((current) => {
-        if (current) URL.revokeObjectURL(current)
-        return zipUrl
-      })
+      if (lastZipUrlRef.current) URL.revokeObjectURL(lastZipUrlRef.current)
+      lastZipUrlRef.current = zipUrl
+      setLastZipUrl(zipUrl)
       setLastZipName(zipName)
       const totalEditions = combos.length + oneOfOnes.length
       const oneOfOneMessage = oneOfOnes.length ? `, including ${oneOfOnes.length} unique 1/1${oneOfOnes.length === 1 ? '' : 's'}` : ''
       setStatus(`Done. ${totalEditions} ${output.label} images${oneOfOneMessage} and ${METADATA_FILE_NAME} are ready.`)
     } catch (error) {
+      await durableZipSession?.abort()
       setStatus(getErrorMessage(error, 'Generation failed.'))
     } finally {
       setBusy(false)
@@ -4204,6 +4291,160 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
   }
 }
 
+function buildSessionSnapshot(source, project) {
+  const assets = new Map()
+  const addAsset = (file) => {
+    if (!(file instanceof Blob)) return ''
+    const name = getSessionAssetName(file)
+    assets.set(name, file)
+    return name
+  }
+  const sourceFile = source.type === 'psd' ? addAsset(source.sourceFile) : ''
+  const baseFile = source.type === 'folder' ? addAsset(source.baseFile) : ''
+  if (source.type === 'psd' && !sourceFile) return null
+
+  const traitAssets = []
+  for (let categoryIndex = 0; categoryIndex < source.categories.length; categoryIndex += 1) {
+    const category = source.categories[categoryIndex]
+    for (let traitIndex = 0; traitIndex < category.traits.length; traitIndex += 1) {
+      const trait = category.traits[traitIndex]
+      if (trait.type !== 'image') continue
+      const asset = addAsset(trait.file)
+      if (!asset) return null
+      traitAssets.push({
+        categoryIndex,
+        traitIndex,
+        asset,
+        id: getTraitId(trait),
+        category: category.name,
+        originalName: trait.originalName,
+        fileName: trait.fileName || trait.file?.name,
+      })
+    }
+  }
+
+  const oneOfOneAssets = []
+  for (let index = 0; index < (source.oneOfOnes || []).length; index += 1) {
+    const artwork = source.oneOfOnes[index]
+    const asset = addAsset(artwork.file)
+    if (!asset) return null
+    oneOfOneAssets.push({
+      index,
+      asset,
+      id: artwork.id,
+      originalName: artwork.originalName,
+      fileName: artwork.fileName || artwork.file?.name,
+    })
+  }
+
+  const savedAt = new Date().toISOString()
+  return {
+    assets,
+    snapshot: {
+      version: 1,
+      savedAt,
+      assetNames: [...assets.keys()],
+      backup: buildProjectBackup(source, project, savedAt),
+      source: { type: source.type, sourceFile, baseFile, traitAssets, oneOfOneAssets },
+    },
+  }
+}
+
+async function restoreSourceFromSession({ snapshot, assets }) {
+  const getAsset = (name) => {
+    const file = name ? assets.get(name) : null
+    if (name && !file) throw new Error('An autosaved source file is missing from on-device storage.')
+    return file || null
+  }
+  const backup = snapshot.backup
+  let rawSource
+
+  if (snapshot.source.type === 'psd') {
+    rawSource = await parsePsdSourceFile(getAsset(snapshot.source.sourceFile))
+    for (const descriptor of snapshot.source.traitAssets || []) {
+      const category = rawSource.categories[descriptor.categoryIndex]
+      if (!category) throw new Error('An autosaved trait no longer matches its PSD group.')
+      const file = getAsset(descriptor.asset)
+      category.traits.push({
+        type: 'image',
+        id: descriptor.id,
+        category: descriptor.category,
+        originalName: descriptor.originalName,
+        name: descriptor.originalName,
+        weight: 1,
+        image: await loadImageFromFile(file),
+        fileName: descriptor.fileName,
+        file,
+      })
+    }
+  } else {
+    const traitAssets = new Map(
+      (snapshot.source.traitAssets || []).map((descriptor) => [`${descriptor.categoryIndex}:${descriptor.traitIndex}`, descriptor]),
+    )
+    const categories = []
+    for (let categoryIndex = 0; categoryIndex < (backup.source.categories || []).length; categoryIndex += 1) {
+      const backupCategory = backup.source.categories[categoryIndex]
+      const traits = []
+      for (let traitIndex = 0; traitIndex < backupCategory.traits.length; traitIndex += 1) {
+        const descriptor = traitAssets.get(`${categoryIndex}:${traitIndex}`)
+        if (!descriptor) throw new Error('An autosaved trait image is missing from the session.')
+        const file = getAsset(descriptor.asset)
+        traits.push({
+          type: 'image',
+          id: descriptor.id,
+          category: backupCategory.name,
+          originalName: descriptor.originalName,
+          name: descriptor.originalName,
+          weight: 1,
+          image: await loadImageFromFile(file),
+          fileName: descriptor.fileName,
+          file,
+        })
+      }
+      categories.push({ name: backupCategory.name, traits })
+    }
+    const baseFile = getAsset(snapshot.source.baseFile)
+    rawSource = {
+      type: 'folder',
+      name: backup.source.name,
+      width: backup.source.width,
+      height: backup.source.height,
+      baseFile,
+      baseImage: baseFile ? await loadImageFromFile(baseFile) : null,
+      categories,
+      oneOfOnes: [],
+      incompatibilities: [],
+      positionRules: [],
+      categoryRequirements: [],
+      traitCategoryConflicts: [],
+      categoryConflicts: [],
+    }
+  }
+
+  rawSource.oneOfOnes = []
+  for (const descriptor of snapshot.source.oneOfOneAssets || []) {
+    const file = getAsset(descriptor.asset)
+    rawSource.oneOfOnes.push({
+      id: descriptor.id,
+      originalName: descriptor.originalName,
+      name: descriptor.originalName,
+      fileName: descriptor.fileName,
+      image: await loadImageFromFile(file),
+      file,
+    })
+  }
+
+  const restored = backup.source.categories?.length
+    ? restoreProjectBackup(rawSource, backup)
+    : { project: { ...DEFAULT_PROJECT, ...backup.project }, source: rawSource }
+  return { ...restored, baseFile: rawSource.baseFile || null, savedAt: snapshot.savedAt }
+}
+
+function formatSavedTime(value) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'your previous visit' : date.toLocaleString()
+}
+
 function restoreProjectBackup(source, backup) {
   if (backup?.version !== 1 || !backup.source?.categories?.length) {
     throw new Error('This is not a supported Trait Forge project backup.')
@@ -4453,6 +4694,25 @@ function parsePsd(psd, fileName) {
   }
 }
 
+async function parsePsdSourceFile(file) {
+  const buffer = await file.arrayBuffer()
+  const psd = readPsd(buffer, {
+    useRawData: true,
+    skipCompositeImageData: true,
+    skipThumbnail: true,
+    skipLinkedFilesData: true,
+  })
+  const estimatedBitmapBytes = estimatePsdBitmapBytes(psd)
+  const lowMemoryMode = estimatedBitmapBytes > RETAINED_PSD_BITMAP_LIMIT
+  if (!lowMemoryMode) decodePsdLayerPixels(psd.children)
+  return {
+    ...parsePsd(psd, file.name),
+    sourceFile: file,
+    lowMemoryMode,
+    estimatedBitmapBytes,
+  }
+}
+
 function estimatePsdBitmapBytes(psd) {
   let total = 0
   const visit = (layers = []) => {
@@ -4523,6 +4783,7 @@ async function parseFolders(files, baseFile) {
       weight: 1,
       image,
       fileName: item.file.name,
+      file: item.file,
     })
     categoryMap.set(category, traits)
   }
@@ -4547,6 +4808,7 @@ async function parseFolders(files, baseFile) {
     width,
     height,
     baseImage,
+    baseFile: baseFile || null,
     categories,
     oneOfOnes: [],
     incompatibilities: [],
@@ -4555,6 +4817,14 @@ async function parseFolders(files, baseFile) {
     traitCategoryConflicts: [],
     categoryConflicts: [],
   }
+}
+
+function renderSourcePreviewBlob(source, project) {
+  const categories = getActiveCategories(source?.categories || [])
+  const combo = categories.length
+    ? buildRandomCombination(categories, `${project.seed}-preview`, 0, getSourceRules(source))
+    : []
+  return renderArtwork(source, combo, { renderMaxDimension: PREVIEW_MAX_DIMENSION })
 }
 
 async function renderArtwork(source, traits, options = {}) {
