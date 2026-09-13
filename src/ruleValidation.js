@@ -19,6 +19,14 @@ function categoriesConflict(firstCategory, secondCategory, categoryConflicts = [
 }
 
 export function findCombinationViolation(combo, rules = {}) {
+  for (const rule of rules.traitCategoryConflicts || []) {
+    const blockedTrait = combo.find((trait) => !trait.isNone && getTraitId(trait) === rule.trait)
+    const blockedCategoryApplied = combo.some((trait) => !trait.isNone && trait.category === rule.category)
+    if (blockedTrait && blockedCategoryApplied) {
+      return `${blockedTrait.category} / ${getTraitName(blockedTrait)} cannot appear with the ${rule.category} folder.`
+    }
+  }
+
   for (let firstIndex = 0; firstIndex < combo.length; firstIndex += 1) {
     for (let secondIndex = firstIndex + 1; secondIndex < combo.length; secondIndex += 1) {
       const firstTrait = combo[firstIndex]

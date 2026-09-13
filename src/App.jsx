@@ -94,6 +94,7 @@ const emptyPositionRuleDraft = {
 }
 const emptyConditionDraft = { categories: [], requiredTrait: '' }
 const emptyFolderConflictDraft = { first: [], second: [] }
+const emptyTraitCategoryConflictDraft = { traitFolder: '', trait: '', category: '' }
 
 function isLoopbackHostname(hostname = '') {
   return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase())
@@ -150,6 +151,7 @@ function App() {
   const [positionRuleFolderDraft, setPositionRuleFolderDraft] = useState(emptyRuleFolderDraft)
   const [conditionDraft, setConditionDraft] = useState(emptyConditionDraft)
   const [folderConflictDraft, setFolderConflictDraft] = useState(emptyFolderConflictDraft)
+  const [traitCategoryConflictDraft, setTraitCategoryConflictDraft] = useState(emptyTraitCategoryConflictDraft)
   const psdInputRef = useRef(null)
   const baseInputRef = useRef(null)
   const folderInputRef = useRef(null)
@@ -388,9 +390,10 @@ function App() {
         ...(source?.incompatibilities || []).flatMap((rule) => [rule.first, rule.second]),
         ...(source?.positionRules || []).flatMap((rule) => [rule.first, rule.second]),
         ...(source?.categoryRequirements || []).map((rule) => rule.requiredTrait),
+        ...(source?.traitCategoryConflicts || []).map((rule) => rule.trait),
       ].filter(Boolean)),
     ],
-    [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements],
+    [ruleDraft.first, ruleDraft.second, positionRuleDraft.first, positionRuleDraft.second, conditionDraft.requiredTrait, source?.incompatibilities, source?.positionRules, source?.categoryRequirements, source?.traitCategoryConflicts],
   )
 
   async function ensureHolderAccess() {
@@ -616,6 +619,7 @@ function App() {
         categories: [],
         oneOfOnes: [],
         incompatibilities: [],
+        traitCategoryConflicts: [],
         positionRules: [],
         categoryRequirements: [],
         categoryConflicts: [],
@@ -1155,6 +1159,9 @@ function App() {
       ...source,
       categories,
       categoryRequirements: (source.categoryRequirements || []).map((rule) => (rule.category === categoryName ? { ...rule, category: nextName } : rule)),
+      traitCategoryConflicts: (source.traitCategoryConflicts || []).map((rule) => (
+        rule.category === categoryName ? { ...rule, category: nextName } : rule
+      )),
       categoryConflicts: (source.categoryConflicts || []).map((rule) => ({
         ...rule,
         first: rule.first === categoryName ? nextName : rule.first,
@@ -1217,6 +1224,7 @@ function App() {
       ...source,
       categories,
       incompatibilities: (source.incompatibilities || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
+      traitCategoryConflicts: (source.traitCategoryConflicts || []).filter((rule) => rule.trait !== traitKey),
       positionRules: (source.positionRules || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
       categoryRequirements: (source.categoryRequirements || []).filter((rule) => rule.requiredTrait !== traitKey),
     }
@@ -1605,6 +1613,40 @@ function App() {
     await renderPreview(nextSource)
   }
 
+  async function addTraitCategoryConflict() {
+    const { trait, category } = traitCategoryConflictDraft
+    if (!source || busy || !trait || !category) return
+    const selectedTrait = findTraitByKey(source, trait)
+    if (!selectedTrait || selectedTrait.category === category) {
+      setStatus('Choose a folder other than the selected trait’s own folder.')
+      return
+    }
+    const existingRules = source.traitCategoryConflicts || []
+    if (existingRules.some((rule) => rule.trait === trait && rule.category === category)) {
+      setStatus('That trait + folder rule already exists.')
+      return
+    }
+    const nextSource = {
+      ...source,
+      traitCategoryConflicts: [...existingRules, { trait, category }],
+    }
+    setSource(nextSource)
+    setTraitCategoryConflictDraft(emptyTraitCategoryConflictDraft)
+    setStatus('Trait + folder rule added.')
+    await renderPreview(nextSource)
+  }
+
+  async function removeTraitCategoryConflict(ruleIndex) {
+    if (!source || busy) return
+    const nextSource = {
+      ...source,
+      traitCategoryConflicts: (source.traitCategoryConflicts || []).filter((_, index) => index !== ruleIndex),
+    }
+    setSource(nextSource)
+    setStatus('Trait + folder rule removed.')
+    await renderPreview(nextSource)
+  }
+
   async function addCategoryConflict() {
     if (!source || busy || !folderConflictDraft.first.length || !folderConflictDraft.second.length) return
     const existingRules = source.categoryConflicts || []
@@ -1946,6 +1988,7 @@ function App() {
             requestedEditions: targetCount,
             validatedEditions: combos.length,
             incompatibilityRules: rules.incompatibilities.length,
+            traitCategoryConflicts: rules.traitCategoryConflicts.length,
             positionRules: (source.positionRules || []).length,
             categoryRequirements: rules.categoryRequirements.length,
             categoryConflicts: rules.categoryConflicts.length,
@@ -2106,6 +2149,7 @@ function App() {
           setPositionRuleFolderDraft(emptyRuleFolderDraft)
           setConditionDraft(emptyConditionDraft)
           setFolderConflictDraft(emptyFolderConflictDraft)
+          setTraitCategoryConflictDraft(emptyTraitCategoryConflictDraft)
           await renderPreview(restored.source)
           const skippedMessage = restored.skippedTraitCount
             ? ` Left ${restored.skippedTraitCount} new ${restored.skippedTraitCount === 1 ? 'trait' : 'traits'} unchanged.`
@@ -2133,6 +2177,7 @@ function App() {
   const traitOptionMap = new Map(traitOptions.map((trait) => [trait.key, trait.label]))
 
   const incompatibilities = source?.incompatibilities || []
+  const traitCategoryConflicts = source?.traitCategoryConflicts || []
   const positionRules = source?.positionRules || []
   const categoryRequirements = source?.categoryRequirements || []
   const categoryConflicts = source?.categoryConflicts || []
@@ -2148,6 +2193,7 @@ function App() {
     }
   }
   const pendingFolderConflictCount = pendingFolderConflictKeys.size
+  const traitCategoryConflictTrait = source ? findTraitByKey(source, traitCategoryConflictDraft.trait) : null
   const traitEditorCategory = selectedCategory || source?.categories?.[0] || null
   const traitEditorCategoryIndex = source?.categories?.length ? Math.min(selectedCategoryIndex, source.categories.length - 1) : 0
   const traitEditorTraitIndex = traitEditorCategory?.traits?.length ? Math.min(selectedTraitIndex, traitEditorCategory.traits.length - 1) : 0
@@ -2690,7 +2736,7 @@ function App() {
                 <details>
                   <summary>What do trait and folder rules do?</summary>
                   <p>
-                    Rules tell Trait Forge which things are allowed together. Trait rules block a pair of individual traits. Folder rules show a folder only when a chosen trait is present. Folder conflicts stop two complete folders from appearing together. These rules can make the final trait counts slightly different from the estimated chances.
+                    Rules tell Trait Forge which things are allowed together. Trait-pair rules block two individual traits. Trait + folder rules block one trait from appearing with anything in a chosen folder. Folder rules show a folder only when a chosen trait is present. Folder conflicts stop two complete folders from appearing together. These rules can make the final trait counts slightly different from the estimated chances.
                   </p>
                 </details>
                 <details>
@@ -3304,6 +3350,16 @@ function App() {
                 <strong>{incompatibilities.length}</strong>
               </button>
               <button
+                className={activeRuleManagerTab === 'trait-folder' ? 'active' : ''}
+                type="button"
+                aria-current={activeRuleManagerTab === 'trait-folder' ? 'page' : undefined}
+                onClick={() => setActiveRuleManagerTab('trait-folder')}
+              >
+                <FolderOpen size={16} />
+                <span>Trait + folder</span>
+                <strong>{traitCategoryConflicts.length}</strong>
+              </button>
+              <button
                 className={activeRuleManagerTab === 'positions' ? 'active' : ''}
                 type="button"
                 aria-current={activeRuleManagerTab === 'positions' ? 'page' : undefined}
@@ -3432,6 +3488,93 @@ function App() {
                     ))}
                   </div>
                 ) : <p className="manager-empty">No trait-pair rules yet.</p>}
+              </section>
+              )}
+
+              {activeRuleManagerTab === 'trait-folder' && (
+              <section className="rule-manager-section">
+                <div className="rule-manager-title">
+                  <span>
+                    <Ban size={16} />
+                    Trait + folder
+                  </span>
+                  <strong>{traitCategoryConflicts.length}</strong>
+                </div>
+                <p>Select one trait and a folder that must never be applied in the same image.</p>
+                <div className="trait-picker-field">
+                  <label>
+                    Trait folder
+                    <select
+                      value={traitCategoryConflictDraft.traitFolder}
+                      disabled={busy}
+                      onChange={(event) => setTraitCategoryConflictDraft((current) => ({ ...current, traitFolder: event.target.value, trait: '' }))}
+                    >
+                      <option value="">Choose folder</option>
+                      {source.categories.map((category, categoryIndex) => (
+                        <option value={categoryIndex} key={`${category.name}-${categoryIndex}`}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Trait
+                    <select
+                      value={traitCategoryConflictDraft.trait}
+                      disabled={busy || traitCategoryConflictDraft.traitFolder === ''}
+                      onChange={(event) => setTraitCategoryConflictDraft((current) => ({ ...current, trait: event.target.value }))}
+                    >
+                      <option value="">Choose trait</option>
+                      {(traitCategoryConflictDraft.traitFolder === '' ? [] : traitOptionsByCategory[Number(traitCategoryConflictDraft.traitFolder)] || []).map((trait) => (
+                        <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <ManagerTraitPreview traitKey={traitCategoryConflictDraft.trait} url={managerPreviewUrls[traitCategoryConflictDraft.trait]} label={traitOptionMap.get(traitCategoryConflictDraft.trait)} />
+                </div>
+                <div className="trait-picker-field">
+                  <label>
+                    Cannot appear with folder
+                    <select
+                      value={traitCategoryConflictDraft.category}
+                      disabled={busy}
+                      onChange={(event) => setTraitCategoryConflictDraft((current) => ({ ...current, category: event.target.value }))}
+                    >
+                      <option value="">Choose folder</option>
+                      {source.categories.map((category, categoryIndex) => (
+                        <option
+                          value={category.name}
+                          disabled={category.name === traitCategoryConflictTrait?.category}
+                          key={`${category.name}-${categoryIndex}`}
+                        >
+                          {category.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <button
+                  className="rule-add"
+                  type="button"
+                  disabled={busy || !traitCategoryConflictDraft.trait || !traitCategoryConflictDraft.category || traitCategoryConflictTrait?.category === traitCategoryConflictDraft.category}
+                  onClick={addTraitCategoryConflict}
+                >
+                  <Ban size={16} />
+                  Add trait + folder rule
+                </button>
+                {traitCategoryConflicts.length ? (
+                  <div className="rule-list">
+                    {traitCategoryConflicts.map((rule, index) => (
+                      <div className="rule-row visual-rule-row" key={`${rule.trait}||${rule.category}`}>
+                        <div className="folder-rule-visual">
+                          <ManagerRuleTraitPreview url={managerPreviewUrls[rule.trait]} label={traitOptionMap.get(rule.trait)} />
+                          <span>cannot appear with folder <strong>{rule.category}</strong></span>
+                        </div>
+                        <button type="button" disabled={busy} aria-label={`Remove trait and folder rule`} onClick={() => removeTraitCategoryConflict(index)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="manager-empty">No trait + folder rules yet.</p>}
               </section>
               )}
 
@@ -4069,6 +4212,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
         firstMatches: matchesForId(rule.first),
         secondMatches: matchesForId(rule.second),
       })),
+      traitCategoryConflicts: (source.traitCategoryConflicts || []).map((rule) => ({ ...rule })),
       positionRules: (source.positionRules || []).map((rule) => ({ ...rule })),
       categoryRequirements: source.categoryRequirements || [],
       categoryConflicts: source.categoryConflicts || [],
@@ -4155,6 +4299,10 @@ function restoreProjectBackup(source, backup) {
     first: remapTraitId(rule.first),
     second: remapTraitId(rule.second),
   }))
+  const traitCategoryConflicts = (backup.source.traitCategoryConflicts || []).map((rule) => ({
+    trait: remapTraitId(rule.trait),
+    category: rule.category,
+  }))
   const positionRules = (backup.source.positionRules || []).map((rule) => ({
     first: remapTraitId(rule.first),
     second: remapTraitId(rule.second),
@@ -4175,6 +4323,7 @@ function restoreProjectBackup(source, backup) {
       return backupArtwork ? { ...artwork, name: backupArtwork.name } : artwork
     }),
     incompatibilities,
+    traitCategoryConflicts,
     positionRules,
     categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
       ...rule,
@@ -4194,7 +4343,8 @@ function restoreProjectBackup(source, backup) {
     traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
     skippedTraitCount: restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
       backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
-    ruleCount: incompatibilities.length + positionRules.length,
+    ruleCount: incompatibilities.length + traitCategoryConflicts.length + positionRules.length +
+      (backup.source.categoryRequirements || []).length + (backup.source.categoryConflicts || []).length,
   }
 }
 
@@ -4265,6 +4415,11 @@ function findInvalidRuleReference(source) {
       return 'The backup contains a position rule that does not match the loaded source.'
     }
   }
+  for (const rule of source.traitCategoryConflicts || []) {
+    if (!traitIds.has(rule.trait) || !source.categories.some((category) => category.name === rule.category)) {
+      return 'The backup contains a trait + folder rule that does not match the loaded source.'
+    }
+  }
   for (const rule of source.categoryRequirements || []) {
     if (!source.categories.some((category) => category.name === rule.category) || !traitIds.has(rule.requiredTrait)) {
       return 'The backup contains a folder rule that does not match the loaded source.'
@@ -4302,6 +4457,7 @@ function parsePsd(psd, fileName) {
     categories,
     oneOfOnes: [],
     incompatibilities: [],
+    traitCategoryConflicts: [],
     positionRules: [],
     categoryRequirements: [],
     categoryConflicts: [],
@@ -4405,6 +4561,7 @@ async function parseFolders(files, baseFile) {
     categories,
     oneOfOnes: [],
     incompatibilities: [],
+    traitCategoryConflicts: [],
     positionRules: [],
     categoryRequirements: [],
     categoryConflicts: [],
@@ -4562,7 +4719,9 @@ function buildRandomCombination(categories, seed, index, rules = {}, balancedInd
   const combo = []
   for (const category of categories) {
     if (!shouldApplyCategory(category, combo, rules.categoryRequirements, rules.categoryConflicts)) continue
-    const availableTraits = getCategoryChoices(category).filter((trait) => isTraitCompatibleWithCombo(trait, combo, rules.incompatibilities))
+    const availableTraits = getCategoryChoices(category).filter((trait) => (
+      isTraitCompatibleWithCombo(trait, combo, rules.incompatibilities, rules.traitCategoryConflicts)
+    ))
     if (!availableTraits.length) return []
     const orderedTraits = getCategorySelectionMode(category) === 'ordered'
       ? availableTraits.filter((trait) => !trait.isNone)
@@ -4592,7 +4751,7 @@ function buildCombinationsUpTo(categories, rules = {}, limit = Number.POSITIVE_I
     }
 
     for (const trait of getCategoryChoices(category)) {
-      if (isTraitCompatibleWithCombo(trait, combo, rules.incompatibilities)) {
+      if (isTraitCompatibleWithCombo(trait, combo, rules.incompatibilities, rules.traitCategoryConflicts)) {
         addCategory(categoryIndex + 1, [...combo, trait])
       }
     }
@@ -4603,7 +4762,7 @@ function buildCombinationsUpTo(categories, rules = {}, limit = Number.POSITIVE_I
 }
 
 function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_INFINITY, timeBudgetMs = COMBO_COUNT_TIME_BUDGET_MS) {
-  if (!rules.incompatibilities?.length && !rules.categoryRequirements?.length && !rules.categoryConflicts?.length) {
+  if (!rules.incompatibilities?.length && !rules.traitCategoryConflicts?.length && !rules.categoryRequirements?.length && !rules.categoryConflicts?.length) {
     let orderedCycleLength = 1
     let mixedCombinationCount = 1
     for (const category of categories) {
@@ -4640,7 +4799,10 @@ function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_
   function isCompatible(trait, combo) {
     if (trait.isNone) return true
     const traitId = makeTraitKey(trait)
-    return combo.every((selectedTrait) => selectedTrait.isNone || !incompatibilityKeys.has(makeRuleKey({ first: traitId, second: makeTraitKey(selectedTrait) })))
+    if (!combo.every((selectedTrait) => selectedTrait.isNone || !incompatibilityKeys.has(makeRuleKey({ first: traitId, second: makeTraitKey(selectedTrait) })))) {
+      return false
+    }
+    return isTraitCategoryCompatibleWithCombo(trait, combo, rules.traitCategoryConflicts)
   }
 
   function shouldApply(category, combo) {
@@ -4673,9 +4835,19 @@ function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_
   return { count: Math.min(count, limit), capped: count > limit, approximate: false }
 }
 
-function isTraitCompatibleWithCombo(trait, combo, incompatibilities = []) {
+function isTraitCompatibleWithCombo(trait, combo, incompatibilities = [], traitCategoryConflicts = []) {
   if (trait.isNone) return true
-  return combo.every((selectedTrait) => !areTraitsIncompatible(trait, selectedTrait, incompatibilities))
+  return combo.every((selectedTrait) => !areTraitsIncompatible(trait, selectedTrait, incompatibilities)) &&
+    isTraitCategoryCompatibleWithCombo(trait, combo, traitCategoryConflicts)
+}
+
+function isTraitCategoryCompatibleWithCombo(trait, combo, traitCategoryConflicts = []) {
+  if (trait.isNone) return true
+  const traitId = makeTraitKey(trait)
+  return !(traitCategoryConflicts || []).some((rule) => (
+    (rule.trait === traitId && combo.some((selectedTrait) => !selectedTrait.isNone && selectedTrait.category === rule.category)) ||
+    (rule.category === trait.category && combo.some((selectedTrait) => !selectedTrait.isNone && makeTraitKey(selectedTrait) === rule.trait))
+  ))
 }
 
 function shouldApplyCategory(category, combo, categoryRequirements = [], categoryConflicts = []) {
@@ -4869,6 +5041,7 @@ function formatCsvCell(value) {
 function getSourceRules(source) {
   return {
     incompatibilities: source?.incompatibilities || [],
+    traitCategoryConflicts: source?.traitCategoryConflicts || [],
     categoryRequirements: source?.categoryRequirements || [],
     categoryConflicts: source?.categoryConflicts || [],
   }
