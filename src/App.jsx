@@ -34,6 +34,8 @@ import { findCombinationViolation, findInvalidCombination } from './ruleValidati
 import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './smartRarities.js'
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
 import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from './folderImport.js'
+import { restoreRenderOrder } from './projectBackup.js'
+import { buildTraitUsageSummary } from './traitUsage.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -205,7 +207,12 @@ function App() {
       const plan = {
         combos,
         targetCount,
-        summary: buildTraitUsageSummary(activeCategories, combos),
+        summary: buildTraitUsageSummary(
+          source.categories.filter((category) => category.enabled !== false),
+          combos,
+          makeTraitKey,
+          getTraitMetadataName,
+        ),
         oneOfOneCount: source.oneOfOnes?.length || 0,
         completed: false,
       }
@@ -2052,7 +2059,12 @@ function App() {
             collectionEditions: combos.length,
             oneOfOneEditions: oneOfOnes.length,
             totalEditions: combos.length + oneOfOnes.length,
-            traitUsage: buildTraitUsageSummary(activeCategories, combos),
+            traitUsage: buildTraitUsageSummary(
+              source.categories.filter((category) => category.enabled !== false),
+              combos,
+              makeTraitKey,
+              getTraitMetadataName,
+            ),
             validationPassed: true,
           },
           null,
@@ -3052,7 +3064,7 @@ function App() {
             </header>
             <div className="generation-summary-intro">
               <strong>{generationPlan.targetCount.toLocaleString()} generated editions</strong>
-              <span>Counts use the current seed, rarities, ordering, and compatibility rules.</span>
+              <span>Every trait is listed, including traits used 0 times. Counts use the current seed, rarities, ordering, and compatibility rules.</span>
               {generationPlan.oneOfOneCount > 0 && (
                 <small>Plus {generationPlan.oneOfOneCount.toLocaleString()} separate 1/1 {generationPlan.oneOfOneCount === 1 ? 'artwork' : 'artworks'}.</small>
               )}
@@ -3062,9 +3074,15 @@ function App() {
                 <section className="generation-summary-group" key={category.name}>
                   <header>
                     <strong>{category.name}</strong>
-                    <span>{category.usedCount.toLocaleString()} trait placements</span>
+                    <span>Trait present in {category.usedCount.toLocaleString()} of {generationPlan.targetCount.toLocaleString()} editions</span>
                   </header>
                   <div className="generation-summary-list">
+                    <div className="generation-summary-labels" aria-hidden="true">
+                      <span>Trait</span>
+                      <span>Usage</span>
+                      <span>Times</span>
+                      <span>Share</span>
+                    </div>
                     {category.traits.map((trait) => (
                       <div className="generation-summary-row" key={trait.key}>
                         <span title={trait.name}>{trait.name}</span>
@@ -4163,42 +4181,6 @@ function downloadBlobUrl(url, fileName) {
   download.remove()
 }
 
-function buildTraitUsageSummary(categories, combos) {
-  const counts = new Map()
-  for (const combo of combos) {
-    for (const trait of combo) {
-      counts.set(makeTraitKey(trait), (counts.get(makeTraitKey(trait)) || 0) + 1)
-    }
-  }
-  const total = Math.max(1, combos.length)
-  return categories.map((category) => {
-    const traits = category.traits.filter((trait) => !trait.isNone).map((trait) => {
-      const count = counts.get(makeTraitKey(trait)) || 0
-      return {
-        key: makeTraitKey(trait),
-        name: getTraitMetadataName(trait),
-        count,
-        percent: (count / total) * 100,
-      }
-    })
-    const usedCount = traits.reduce((sum, trait) => sum + trait.count, 0)
-    const blankCount = Math.max(0, combos.length - usedCount)
-    if (blankCount > 0) {
-      traits.push({
-        key: `${category.name}::__summary-none__`,
-        name: 'No trait (empty)',
-        count: blankCount,
-        percent: (blankCount / total) * 100,
-      })
-    }
-    return {
-      name: category.name,
-      usedCount,
-      traits,
-    }
-  })
-}
-
 function getSavedPositionDraft(source, firstKey, secondKey) {
   if (!source || !firstKey || !secondKey) return null
   const rule = (source.positionRules || []).find((candidate) => makeRuleKey(candidate) === makeRuleKey({ first: firstKey, second: secondKey }))
@@ -4407,6 +4389,7 @@ function restoreProjectBackup(source, backup) {
 
   const unusedCategories = new Set(source.categories)
   const restoredCategoryByCurrentCategory = new Map()
+  const restoredCategoriesInBackupOrder = []
   const restoredIdByBackupId = new Map()
 
   for (const backupCategory of backup.source.categories) {
@@ -4451,18 +4434,24 @@ function restoreProjectBackup(source, backup) {
       extraTraits.has(trait) ? { ...trait, category: backupCategory.name } : restoredTraitByCurrentTrait.get(trait),
     )
 
-    restoredCategoryByCurrentCategory.set(currentCategory.category, {
+    const restoredCategory = {
       ...currentCategory.category,
       name: backupCategory.name,
       enabled: backupCategory.enabled !== false,
       selectionMode: getCategorySelectionMode(backupCategory),
       noneWeight: clampDecimal(backupCategory.noneWeight, 0, 100),
       traits: mergedTraits,
-    })
+    }
+    restoredCategoryByCurrentCategory.set(currentCategory.category, restoredCategory)
+    restoredCategoriesInBackupOrder.push(restoredCategory)
   }
 
-  const restoredCategories = source.categories.map((category) =>
-    restoredCategoryByCurrentCategory.get(category) || category,
+  // The categories array is the render stack. Rebuild it in the order stored
+  // by the backup, then retain any newly imported folders at the end.
+  const restoredCategories = restoreRenderOrder(
+    source.categories,
+    restoredCategoriesInBackupOrder,
+    restoredCategoryByCurrentCategory,
   )
 
   const remapTraitId = (id) => restoredIdByBackupId.get(id) || id
