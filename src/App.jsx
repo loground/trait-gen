@@ -136,6 +136,7 @@ function App() {
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
   const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
+  const [previewedTraitKey, setPreviewedTraitKey] = useState('')
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
   const [rarityPlanner, setRarityPlanner] = useState({ open: false, supply: '3333', zeroNoneCategoryIndexes: [], sourceKey: '' })
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
@@ -165,6 +166,7 @@ function App() {
   const baseFileRef = useRef(null)
   const previewTimerRef = useRef(null)
   const previewRequestRef = useRef(0)
+  const previewStageRef = useRef(null)
   const samplePreviewUrlsRef = useRef([])
   const sampleCollageUrlRef = useRef('')
   const managerPreviewUrlsRef = useRef({})
@@ -975,6 +977,7 @@ function App() {
     }
     const requestId = previewRequestRef.current + 1
     previewRequestRef.current = requestId
+    setPreviewedTraitKey('')
     const combo = categories.length ? buildRandomCombination(categories, `${project.seed}-preview`, 0, getSourceRules(activeSource)) : []
     const blob = await renderArtwork(activeSource, combo, { renderMaxDimension: PREVIEW_MAX_DIMENSION })
     if (requestId !== previewRequestRef.current) return
@@ -1009,6 +1012,9 @@ function App() {
     }
     const requestId = previewRequestRef.current + 1
     previewRequestRef.current = requestId
+    setSelectedCategoryIndex(categoryIndex)
+    setSelectedTraitIndex(traitIndex)
+    setPreviewedTraitKey(makeTraitKey(trait))
     setStatus(`Previewing ${getTraitMetadataName(trait)}.`)
     try {
       const blob = await renderArtwork(source, [trait], { renderMaxDimension: PREVIEW_MAX_DIMENSION })
@@ -1018,6 +1024,9 @@ function App() {
         if (current) URL.revokeObjectURL(current)
         return url
       })
+      if (window.matchMedia('(max-width: 1080px)').matches) {
+        window.requestAnimationFrame(() => previewStageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+      }
     } catch (error) {
       setStatus(getErrorMessage(error, 'Could not preview that trait.'))
     }
@@ -2493,7 +2502,7 @@ function App() {
                     <div className="folder-trait-list" aria-label={`Traits in ${item.name}`}>
                       {source.categories[index].traits.length ? source.categories[index].traits.map((trait, traitIndex) => (
                         <div
-                          className="folder-trait-chip"
+                          className={`folder-trait-chip ${previewedTraitKey === makeTraitKey(trait) ? 'selected' : ''}`}
                           draggable={!busy}
                           onDragStart={(event) => startTraitFolderDrag(event, index, traitIndex)}
                           onDragEnd={finishTraitFolderDrag}
@@ -2510,7 +2519,7 @@ function App() {
                           key={`${getTraitId(trait)}-${traitIndex}`}
                         >
                           <span>{getTraitMetadataName(trait)}</span>
-                          <small>Drag to move</small>
+                          <small>{previewedTraitKey === makeTraitKey(trait) ? 'Previewing' : 'Preview · drag'}</small>
                         </div>
                       )) : <p>This folder has no traits. Drag traits here from another folder.</p>}
                     </div>
@@ -2569,6 +2578,7 @@ function App() {
 
         <section
           className={`preview-stage ${activeDropTarget === 'preview' ? 'drag-active' : ''}`}
+          ref={previewStageRef}
           aria-label="Artwork preview and file drop area"
           onDragEnter={(event) => handleDropOver(event, 'preview')}
           onDragOver={(event) => handleDropOver(event, 'preview')}

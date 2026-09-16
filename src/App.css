@@ -578,6 +578,17 @@ button:disabled {
   cursor: grabbing;
 }
 
+.folder-trait-chip.selected {
+  color: #075a55;
+  background: #e9f8f4;
+  border-color: #75b7ad;
+  box-shadow: inset 3px 0 #0d6b67;
+}
+
+.folder-trait-chip.selected small {
+  color: #0d6b67;
+}
+
 .folder-trait-chip span {
   min-width: 0;
   overflow: hidden;
@@ -1976,6 +1987,7 @@ button:disabled {
 }
 
 .multi-rule-options {
+  min-width: 0;
   max-height: 240px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1986,7 +1998,7 @@ button:disabled {
 .multi-rule-option {
   min-width: 0;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   margin: 0;
@@ -2026,9 +2038,12 @@ button:disabled {
 }
 
 .multi-rule-option small {
+  grid-column: 2;
+  min-width: 0;
   color: #7a8798;
   font-size: 9px;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .trait-picker-field {
@@ -3347,6 +3362,22 @@ input[type='range'] {
   .folder-conflict-pickers,
   .multi-rule-options {
     grid-template-columns: 1fr;
+  }
+
+  .rule-manager-section {
+    padding: 20px 14px 28px;
+  }
+
+  .multi-rule-picker {
+    padding: 8px;
+  }
+
+  .multi-rule-option {
+    width: 100%;
+  }
+
+  .trait-picker-field {
+    grid-template-columns: minmax(0, 1fr) 72px;
   }
 
   .topbar {
