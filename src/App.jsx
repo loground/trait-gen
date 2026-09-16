@@ -114,6 +114,8 @@ function App() {
   const [samplePreviews, setSamplePreviews] = useState([])
   const [sampleCollage, setSampleCollage] = useState(null)
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
+  const [generationSummaryOpen, setGenerationSummaryOpen] = useState(false)
+  const [generationPlan, setGenerationPlan] = useState(null)
   const [gifFrameCount, setGifFrameCount] = useState(7)
   const [gifBusy, setGifBusy] = useState(false)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
@@ -185,8 +187,43 @@ function App() {
       setStatus(generationError)
       return
     }
+    const activeCategories = getActiveCategories(source.categories)
+    const rules = getSourceRules(source)
+    const validCombinationInfo = countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
+    const targetCount = validCombinationInfo.capped
+      ? clampNumber(project.count, 1, COMBO_COUNT_DISPLAY_LIMIT)
+      : clampNumber(project.count, 1, Math.max(1, validCombinationInfo.count))
+    setBusy(true)
+    setStatus(`Calculating exact trait use for ${targetCount} editions...`)
+    try {
+      const combos = project.mode === 'all' && !hasOrderedCategories(activeCategories)
+        ? buildCombinationsUpTo(activeCategories, rules, targetCount)
+        : buildUniqueRandomCombinations(activeCategories, targetCount, project.seed, rules)
+      if (combos.length !== targetCount) {
+        throw new Error(`Only ${combos.length} unique valid combinations could be selected. Requested ${targetCount}.`)
+      }
+      const plan = {
+        combos,
+        targetCount,
+        summary: buildTraitUsageSummary(activeCategories, combos),
+        oneOfOneCount: source.oneOfOnes?.length || 0,
+        completed: false,
+      }
+      setGenerationPlan(plan)
+      setGenerationSummaryOpen(true)
+      setStatus(`Trait-use summary ready for ${targetCount} editions.`)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not calculate trait use.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmGeneration() {
+    if (!generationPlan || busy) return
+    setGenerationSummaryOpen(false)
     if (LOCAL_FREE_GENERATION) {
-      await generateCollection()
+      await generateCollection(generationPlan)
       return
     }
     if (account.credits > 0) {
@@ -239,7 +276,7 @@ function App() {
       const result = await response.json()
       setAccount((current) => ({ ...current, credits: Number(result.credits) || 0 }))
       setAccessOpen(false)
-      await generateCollection()
+      await generateCollection(generationPlan)
     } catch (error) {
       setAccessMessage(getErrorMessage(error, 'Could not authorize generation.'))
       setAccessOpen(true)
@@ -421,6 +458,11 @@ function App() {
     },
     [],
   )
+
+  useEffect(() => {
+    setGenerationPlan(null)
+    setGenerationSummaryOpen(false)
+  }, [source, project.count, project.seed, project.mode])
 
   useEffect(() => {
     let cancelled = false
@@ -1399,13 +1441,26 @@ function App() {
   function selectPositionRuleTrait(side, traitKey) {
     const trait = source ? findTraitByKey(source, traitKey) : null
     if (traitKey) setActivePositionTraitSide(side)
-    setPositionRuleDraft((current) => ({
-      ...current,
-      [side]: traitKey,
-      [`${side}X`]: trait ? getTraitOffset(trait, 'x') : 0,
-      [`${side}Y`]: trait ? getTraitOffset(trait, 'y') : 0,
-      [`${side}Scale`]: 100,
-    }))
+    setPositionRuleDraft((current) => {
+      let next = {
+        ...current,
+        [side]: traitKey,
+        [`${side}X`]: trait ? getTraitOffset(trait, 'x') : 0,
+        [`${side}Y`]: trait ? getTraitOffset(trait, 'y') : 0,
+        [`${side}Scale`]: 100,
+      }
+      const otherSide = side === 'first' ? 'second' : 'first'
+      const otherTrait = source ? findTraitByKey(source, next[otherSide]) : null
+      if (otherTrait) {
+        next = {
+          ...next,
+          [`${otherSide}X`]: getTraitOffset(otherTrait, 'x'),
+          [`${otherSide}Y`]: getTraitOffset(otherTrait, 'y'),
+          [`${otherSide}Scale`]: 100,
+        }
+      }
+      return getSavedPositionDraft(source, next.first, next.second) || next
+    })
   }
 
   function selectPositionRuleFolder(side, folderIndex) {
@@ -1415,13 +1470,13 @@ function App() {
       const firstOptions = traitOptionsByCategory[Number(nextFolders.first)] || []
       const secondOptions = traitOptionsByCategory[Number(nextFolders.second)] || []
       const existingKeys = new Set((source?.positionRules || []).map(makeRuleKey))
-      const firstPair = firstOptions
+      const pairs = firstOptions
         .flatMap((firstOption) => secondOptions.map((secondOption) => ({ firstOption, secondOption })))
-        .find(({ firstOption, secondOption }) => !existingKeys.has(makeRuleKey({ first: firstOption.key, second: secondOption.key })))
+      const firstPair = pairs.find(({ firstOption, secondOption }) => !existingKeys.has(makeRuleKey({ first: firstOption.key, second: secondOption.key }))) || pairs[0]
       if (firstPair) {
         const firstTrait = findTraitByKey(source, firstPair.firstOption.key)
         const secondTrait = findTraitByKey(source, firstPair.secondOption.key)
-        setPositionRuleDraft({
+        const defaultDraft = {
           first: firstPair.firstOption.key,
           firstX: getTraitOffset(firstTrait, 'x'),
           firstY: getTraitOffset(firstTrait, 'y'),
@@ -1430,7 +1485,8 @@ function App() {
           secondX: getTraitOffset(secondTrait, 'x'),
           secondY: getTraitOffset(secondTrait, 'y'),
           secondScale: 100,
-        })
+        }
+        setPositionRuleDraft(getSavedPositionDraft(source, defaultDraft.first, defaultDraft.second) || defaultDraft)
         setActivePositionTraitSide('second')
         return
       }
@@ -1526,11 +1582,11 @@ function App() {
       }
     }
     const existingRules = source.positionRules || []
-    if (existingRules.some((existingRule) => makeRuleKey(existingRule) === makeRuleKey(rule))) {
-      setStatus('That pair already has a position rule.')
-      return
-    }
-    const nextSource = { ...source, positionRules: [...existingRules, rule] }
+    const existingRuleIndex = existingRules.findIndex((existingRule) => makeRuleKey(existingRule) === makeRuleKey(rule))
+    const nextPositionRules = existingRuleIndex >= 0
+      ? existingRules.map((existingRule, index) => (index === existingRuleIndex ? rule : existingRule))
+      : [...existingRules, rule]
+    const nextSource = { ...source, positionRules: nextPositionRules }
     setSource(nextSource)
     if (advancePair && positionRuleFolderDraft.first !== '' && positionRuleFolderDraft.second !== '') {
       const firstOptions = traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []
@@ -1558,12 +1614,12 @@ function App() {
           secondScale: 100,
         }))
         setActivePositionTraitSide('second')
-        setStatus('Position rule saved. Advanced to the next unconfigured pair.')
+        setStatus(`${existingRuleIndex >= 0 ? 'Position rule updated' : 'Position rule saved'}. Advanced to the next unconfigured pair.`)
       } else {
-        setStatus('Position rule saved. Every pair in these folders is now configured.')
+        setStatus(`${existingRuleIndex >= 0 ? 'Position rule updated' : 'Position rule saved'}. Every pair in these folders is now configured.`)
       }
     } else {
-      setStatus('Pair-specific position rule added. Selections kept so you can quickly create another.')
+      setStatus(`Pair-specific position rule ${existingRuleIndex >= 0 ? 'updated' : 'saved'}. Selections kept so you can keep editing.`)
     }
     await renderPreview(nextSource)
   }
@@ -1919,7 +1975,7 @@ function App() {
     }
   }
 
-  async function generateCollection() {
+  async function generateCollection(preparedPlan = null) {
     if (!(await ensureHolderAccess())) return
     if (!source?.categories?.length) {
       setStatus('Load a PSD or folder set first.')
@@ -1964,8 +2020,9 @@ function App() {
       ]
       const metadataRows = []
       const manifest = []
-      const combos =
-        project.mode === 'all' && !hasOrderedCategories(activeCategories)
+      const combos = preparedPlan?.targetCount === targetCount && preparedPlan.combos?.length === targetCount
+        ? preparedPlan.combos
+        : project.mode === 'all' && !hasOrderedCategories(activeCategories)
           ? buildCombinationsUpTo(activeCategories, rules, targetCount)
           : buildUniqueRandomCombinations(activeCategories, targetCount, project.seed, rules)
 
@@ -1995,6 +2052,7 @@ function App() {
             collectionEditions: combos.length,
             oneOfOneEditions: oneOfOnes.length,
             totalEditions: combos.length + oneOfOnes.length,
+            traitUsage: buildTraitUsageSummary(activeCategories, combos),
             validationPassed: true,
           },
           null,
@@ -2093,6 +2151,7 @@ function App() {
         return zipUrl
       })
       setLastZipName(zipName)
+      setGenerationPlan((current) => (current ? { ...current, completed: true } : current))
       const totalEditions = combos.length + oneOfOnes.length
       const oneOfOneMessage = oneOfOnes.length ? `, including ${oneOfOnes.length} unique 1/1${oneOfOnes.length === 1 ? '' : 's'}` : ''
       setStatus(`Done. ${totalEditions} ${output.label} images${oneOfOneMessage} and ${METADATA_FILE_NAME} are ready.`)
@@ -2635,6 +2694,13 @@ function App() {
             Preview {samplePreviewCount} {samplePreviewCount === 1 ? 'sample' : 'samples'}
           </button>
 
+          {generationPlan && (
+            <button className="usage-summary-action" type="button" onClick={() => setGenerationSummaryOpen(true)} disabled={busy}>
+              <SlidersHorizontal size={18} />
+              {generationPlan.completed ? 'View final trait counts' : 'View trait counts'}
+            </button>
+          )}
+
           <button className="primary-action" type="button" onClick={startGeneration} disabled={busy || !source}>
             {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
             {LOCAL_FREE_GENERATION
@@ -2967,6 +3033,58 @@ function App() {
                   Share {sampleCollage?.count || 8}-item collage to X
                 </button>
               </div>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {generationSummaryOpen && generationPlan && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="generation-summary-modal" role="dialog" aria-modal="true" aria-labelledby="generation-summary-title">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">Exact generation plan</p>
+                <h2 id="generation-summary-title">Trait usage summary</h2>
+              </div>
+              <button type="button" aria-label="Close trait usage summary" disabled={busy} onClick={() => setGenerationSummaryOpen(false)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="generation-summary-intro">
+              <strong>{generationPlan.targetCount.toLocaleString()} generated editions</strong>
+              <span>Counts use the current seed, rarities, ordering, and compatibility rules.</span>
+              {generationPlan.oneOfOneCount > 0 && (
+                <small>Plus {generationPlan.oneOfOneCount.toLocaleString()} separate 1/1 {generationPlan.oneOfOneCount === 1 ? 'artwork' : 'artworks'}.</small>
+              )}
+            </div>
+            <div className="generation-summary-groups">
+              {generationPlan.summary.map((category) => (
+                <section className="generation-summary-group" key={category.name}>
+                  <header>
+                    <strong>{category.name}</strong>
+                    <span>{category.usedCount.toLocaleString()} trait placements</span>
+                  </header>
+                  <div className="generation-summary-list">
+                    {category.traits.map((trait) => (
+                      <div className="generation-summary-row" key={trait.key}>
+                        <span title={trait.name}>{trait.name}</span>
+                        <div aria-hidden="true"><i style={{ width: `${trait.percent}%` }} /></div>
+                        <strong>{trait.count.toLocaleString()}</strong>
+                        <small>{trait.percent.toFixed(trait.percent < 1 && trait.percent > 0 ? 1 : 0)}%</small>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+            <footer className="generation-summary-footer">
+              <span>{generationPlan.completed ? 'These are the counts used for the latest generated ZIP.' : 'Review the counts, then continue when they look right.'}</span>
+              {!generationPlan.completed && (
+                <button className="primary-action" type="button" disabled={busy} onClick={confirmGeneration}>
+                  <Play size={17} />
+                  Continue to generate ZIP
+                </button>
+              )}
             </footer>
           </section>
         </div>
@@ -3741,7 +3859,7 @@ function App() {
                     title="Save this pair without advancing"
                   >
                     <SlidersHorizontal size={16} />
-                    Save only
+                    {positionRules.some((rule) => makeRuleKey(rule) === makeRuleKey(positionRuleDraft)) ? 'Update pair' : 'Save only'}
                   </button>
                 </div>
                 {positionRules.length ? (
@@ -4043,6 +4161,59 @@ function downloadBlobUrl(url, fileName) {
   document.body.appendChild(download)
   download.click()
   download.remove()
+}
+
+function buildTraitUsageSummary(categories, combos) {
+  const counts = new Map()
+  for (const combo of combos) {
+    for (const trait of combo) {
+      counts.set(makeTraitKey(trait), (counts.get(makeTraitKey(trait)) || 0) + 1)
+    }
+  }
+  const total = Math.max(1, combos.length)
+  return categories.map((category) => {
+    const traits = category.traits.filter((trait) => !trait.isNone).map((trait) => {
+      const count = counts.get(makeTraitKey(trait)) || 0
+      return {
+        key: makeTraitKey(trait),
+        name: getTraitMetadataName(trait),
+        count,
+        percent: (count / total) * 100,
+      }
+    })
+    const usedCount = traits.reduce((sum, trait) => sum + trait.count, 0)
+    const blankCount = Math.max(0, combos.length - usedCount)
+    if (blankCount > 0) {
+      traits.push({
+        key: `${category.name}::__summary-none__`,
+        name: 'No trait (empty)',
+        count: blankCount,
+        percent: (blankCount / total) * 100,
+      })
+    }
+    return {
+      name: category.name,
+      usedCount,
+      traits,
+    }
+  })
+}
+
+function getSavedPositionDraft(source, firstKey, secondKey) {
+  if (!source || !firstKey || !secondKey) return null
+  const rule = (source.positionRules || []).find((candidate) => makeRuleKey(candidate) === makeRuleKey({ first: firstKey, second: secondKey }))
+  if (!rule) return null
+  const sameOrder = rule.first === firstKey
+  return {
+    first: firstKey,
+    firstX: sameOrder ? rule.firstOffsetX : rule.secondOffsetX,
+    firstY: sameOrder ? rule.firstOffsetY : rule.secondOffsetY,
+    firstScale: normalizeRuleScale(sameOrder ? rule.firstScale : rule.secondScale),
+    second: secondKey,
+    secondX: sameOrder ? rule.secondOffsetX : rule.firstOffsetX,
+    secondY: sameOrder ? rule.secondOffsetY : rule.firstOffsetY,
+    secondScale: normalizeRuleScale(sameOrder ? rule.secondScale : rule.firstScale),
+  }
 }
 
 async function readResponseError(response, fallback) {

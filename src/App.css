@@ -930,6 +930,177 @@ button:disabled {
   box-shadow: 0 28px 80px rgba(18, 27, 39, 0.28);
 }
 
+.generation-summary-modal {
+  width: min(920px, 100%);
+  max-height: min(860px, calc(100svh - 48px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #c6d0dd;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(18, 27, 39, 0.28);
+}
+
+.generation-summary-intro {
+  display: grid;
+  gap: 3px;
+  padding: 14px 20px;
+  color: #607188;
+  background: #f5f8fb;
+  border-bottom: 1px solid #d8dee8;
+  font-size: 12px;
+}
+
+.generation-summary-intro strong {
+  color: #182334;
+  font-size: 15px;
+}
+
+.generation-summary-intro small {
+  color: #0d6b67;
+  font-weight: 800;
+}
+
+.generation-summary-groups {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 14px;
+  padding: 18px;
+  overflow-y: auto;
+  background: #f4f6f9;
+}
+
+.generation-summary-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d5dde7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.generation-summary-group > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  border-bottom: 1px solid #e2e7ee;
+}
+
+.generation-summary-group > header strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #182334;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generation-summary-group > header span {
+  flex: 0 0 auto;
+  color: #718096;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.generation-summary-list {
+  display: grid;
+}
+
+.generation-summary-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(70px, 1fr) 48px 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #edf0f4;
+  color: #45576c;
+  font-size: 11px;
+}
+
+.generation-summary-row:last-child {
+  border-bottom: 0;
+}
+
+.generation-summary-row > span {
+  overflow: hidden;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generation-summary-row > div {
+  height: 7px;
+  overflow: hidden;
+  background: #e7ecf2;
+  border-radius: 999px;
+}
+
+.generation-summary-row i {
+  height: 100%;
+  display: block;
+  background: #0d6b67;
+  border-radius: inherit;
+}
+
+.generation-summary-row strong,
+.generation-summary-row small {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.generation-summary-row strong {
+  color: #182334;
+  font-size: 12px;
+}
+
+.generation-summary-row small {
+  color: #718096;
+  font-size: 10px;
+}
+
+.generation-summary-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  color: #607188;
+  border-top: 1px solid #d8dee8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.generation-summary-footer .primary-action {
+  width: auto;
+  margin: 0;
+}
+
+.usage-summary-action {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 14px;
+  color: #075a55;
+  background: #e9f7f4;
+  border: 1px solid #8ac8bf;
+  border-radius: 7px;
+  font: inherit;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.usage-summary-action:hover:not(:disabled) {
+  background: #d9f0ec;
+}
+
 .intro-backdrop {
   z-index: 30;
   background: rgba(18, 27, 39, 0.64);
@@ -3225,6 +3396,30 @@ input[type='range'] {
 
   .sample-preview-modal {
     max-height: calc(100svh - 20px);
+  }
+
+  .generation-summary-modal {
+    max-height: calc(100svh - 20px);
+  }
+
+  .generation-summary-groups {
+    grid-template-columns: 1fr;
+    padding: 10px;
+  }
+
+  .generation-summary-row {
+    grid-template-columns: minmax(80px, 1fr) 60px 44px 38px;
+    gap: 6px;
+    padding-inline: 10px;
+  }
+
+  .generation-summary-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .generation-summary-footer .primary-action {
+    width: 100%;
   }
 
   .payment-modal {
