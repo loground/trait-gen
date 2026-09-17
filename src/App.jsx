@@ -34,8 +34,9 @@ import { findCombinationViolation, findInvalidCombination } from './ruleValidati
 import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './smartRarities.js'
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
 import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from './folderImport.js'
-import { restoreRenderOrder } from './projectBackup.js'
+import { matchBackupCategory, matchBackupTraits, restoreRenderOrder } from './projectBackup.js'
 import { buildTraitUsageSummary } from './traitUsage.js'
+import { togglePreviewTraitKeys } from './traitPreview.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -136,7 +137,7 @@ function App() {
   const [lastZipName, setLastZipName] = useState('')
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0)
   const [selectedTraitIndex, setSelectedTraitIndex] = useState(0)
-  const [previewedTraitKey, setPreviewedTraitKey] = useState('')
+  const [previewedTraitKeys, setPreviewedTraitKeys] = useState([])
   const [traitEditorOpen, setTraitEditorOpen] = useState(false)
   const [rarityPlanner, setRarityPlanner] = useState({ open: false, supply: '3333', zeroNoneCategoryIndexes: [], sourceKey: '' })
   const [traitManagerOpen, setTraitManagerOpen] = useState(false)
@@ -977,7 +978,7 @@ function App() {
     }
     const requestId = previewRequestRef.current + 1
     previewRequestRef.current = requestId
-    setPreviewedTraitKey('')
+    setPreviewedTraitKeys([])
     const combo = categories.length ? buildRandomCombination(categories, `${project.seed}-preview`, 0, getSourceRules(activeSource)) : []
     const blob = await renderArtwork(activeSource, combo, { renderMaxDimension: PREVIEW_MAX_DIMENSION })
     if (requestId !== previewRequestRef.current) return
@@ -1002,10 +1003,17 @@ function App() {
     }
   }
 
-  async function previewSingleTrait(categoryIndex, traitIndex) {
+  async function toggleTraitPreview(categoryIndex, traitIndex) {
     if (!source || busy || traitFolderDragOccurredRef.current) return
     const trait = source.categories[categoryIndex]?.traits[traitIndex]
     if (!trait) return
+    const traitKey = makeTraitKey(trait)
+    const categoryTraitKeys = source.categories[categoryIndex].traits.map(makeTraitKey)
+    const wasSelected = previewedTraitKeys.includes(traitKey)
+    const nextKeys = togglePreviewTraitKeys(previewedTraitKeys, traitKey, categoryTraitKeys)
+    const nextTraits = nextKeys
+      .map((key) => findTraitByKey(source, key))
+      .filter(Boolean)
     if (previewTimerRef.current) {
       window.clearTimeout(previewTimerRef.current)
       previewTimerRef.current = null
@@ -1014,10 +1022,12 @@ function App() {
     previewRequestRef.current = requestId
     setSelectedCategoryIndex(categoryIndex)
     setSelectedTraitIndex(traitIndex)
-    setPreviewedTraitKey(makeTraitKey(trait))
-    setStatus(`Previewing ${getTraitMetadataName(trait)}.`)
+    setPreviewedTraitKeys(nextKeys)
+    setStatus(wasSelected
+      ? `${getTraitMetadataName(trait)} removed from the layered preview.`
+      : `Previewing ${nextTraits.length} selected ${nextTraits.length === 1 ? 'trait' : 'traits'} together.`)
     try {
-      const blob = await renderArtwork(source, [trait], { renderMaxDimension: PREVIEW_MAX_DIMENSION })
+      const blob = await renderArtwork(source, nextTraits, { renderMaxDimension: PREVIEW_MAX_DIMENSION })
       if (requestId !== previewRequestRef.current) return
       const url = URL.createObjectURL(blob)
       setPreviewUrl((current) => {
@@ -1028,7 +1038,30 @@ function App() {
         window.requestAnimationFrame(() => previewStageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
       }
     } catch (error) {
-      setStatus(getErrorMessage(error, 'Could not preview that trait.'))
+      setStatus(getErrorMessage(error, 'Could not update the layered trait preview.'))
+    }
+  }
+
+  async function clearTraitPreview() {
+    if (!source || busy || !previewedTraitKeys.length) return
+    if (previewTimerRef.current) {
+      window.clearTimeout(previewTimerRef.current)
+      previewTimerRef.current = null
+    }
+    const requestId = previewRequestRef.current + 1
+    previewRequestRef.current = requestId
+    setPreviewedTraitKeys([])
+    setStatus('Layered trait preview cleared.')
+    try {
+      const blob = await renderArtwork(source, [], { renderMaxDimension: PREVIEW_MAX_DIMENSION })
+      if (requestId !== previewRequestRef.current) return
+      const url = URL.createObjectURL(blob)
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current)
+        return url
+      })
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not clear the layered trait preview.'))
     }
   }
 
@@ -2436,6 +2469,15 @@ function App() {
                 </button>
               </div>
             </div>
+            {!!previewedTraitKeys.length && (
+              <div className="trait-preview-selection" aria-live="polite">
+                <span>{previewedTraitKeys.length} {previewedTraitKeys.length === 1 ? 'trait' : 'traits'} in preview</span>
+                <button type="button" onClick={clearTraitPreview} disabled={busy}>
+                  <X size={12} />
+                  Clear
+                </button>
+              </div>
+            )}
             {sourceSummary.length ? (
               sourceSummary.map((item, index) => (
                 <div
@@ -2502,24 +2544,25 @@ function App() {
                     <div className="folder-trait-list" aria-label={`Traits in ${item.name}`}>
                       {source.categories[index].traits.length ? source.categories[index].traits.map((trait, traitIndex) => (
                         <div
-                          className={`folder-trait-chip ${previewedTraitKey === makeTraitKey(trait) ? 'selected' : ''}`}
+                          className={`folder-trait-chip ${previewedTraitKeys.includes(makeTraitKey(trait)) ? 'selected' : ''}`}
                           draggable={!busy}
                           onDragStart={(event) => startTraitFolderDrag(event, index, traitIndex)}
                           onDragEnd={finishTraitFolderDrag}
-                          onClick={() => previewSingleTrait(index, traitIndex)}
+                          onClick={() => toggleTraitPreview(index, traitIndex)}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault()
-                              previewSingleTrait(index, traitIndex)
+                              toggleTraitPreview(index, traitIndex)
                             }
                           }}
                           role="button"
+                          aria-pressed={previewedTraitKeys.includes(makeTraitKey(trait))}
                           tabIndex={0}
-                          title={`Drag ${getTraitMetadataName(trait)} to another folder`}
+                          title={`Click to ${previewedTraitKeys.includes(makeTraitKey(trait)) ? 'remove from' : 'add to'} preview · drag to move folders`}
                           key={`${getTraitId(trait)}-${traitIndex}`}
                         >
                           <span>{getTraitMetadataName(trait)}</span>
-                          <small>{previewedTraitKey === makeTraitKey(trait) ? 'Previewing' : 'Preview · drag'}</small>
+                          <small>{previewedTraitKeys.includes(makeTraitKey(trait)) ? 'Added · remove' : 'Add · drag'}</small>
                         </div>
                       )) : <p>This folder has no traits. Drag traits here from another folder.</p>}
                     </div>
@@ -4403,28 +4446,18 @@ function restoreProjectBackup(source, backup) {
   const restoredIdByBackupId = new Map()
 
   for (const backupCategory of backup.source.categories) {
-    const backupIds = new Set(backupCategory.traits.map((trait) => trait.id))
-    let currentCategory = [...unusedCategories]
-      .map((category) => ({
-        category,
-        matches: category.traits.filter((trait) => backupIds.has(getTraitId(trait))).length,
-      }))
-      .sort((first, second) => second.matches - first.matches)[0]
-
-    if (!currentCategory?.matches) {
-      currentCategory = { category: source.categories[backupCategory.categoryIndex], matches: 0 }
-    }
-    if (!currentCategory.category || !unusedCategories.has(currentCategory.category)) {
+    const currentCategory = matchBackupCategory([...unusedCategories], backupCategory, getTraitId)
+    if (!currentCategory) {
       throw new Error(`Could not match the backed-up group "${backupCategory.name}" to the loaded source.`)
     }
-    if (currentCategory.category.traits.length < backupCategory.traits.length) {
+    if (currentCategory.traits.length < backupCategory.traits.length) {
       throw new Error(
-        `Group "${backupCategory.name}" has ${currentCategory.category.traits.length} loaded traits but the backup expects ${backupCategory.traits.length}.`,
+        `Group "${backupCategory.name}" has ${currentCategory.traits.length} loaded traits but the backup expects ${backupCategory.traits.length}.`,
       )
     }
 
-    unusedCategories.delete(currentCategory.category)
-    const { matches, extras } = matchBackupTraits(currentCategory.category.traits, backupCategory.traits)
+    unusedCategories.delete(currentCategory)
+    const { matches, extras } = matchBackupTraits(currentCategory.traits, backupCategory.traits, getTraitId)
     const restoredTraitByCurrentTrait = new Map()
     backupCategory.traits.forEach((backupTrait, traitIndex) => {
       const currentTrait = matches[traitIndex]
@@ -4440,19 +4473,19 @@ function restoreProjectBackup(source, backup) {
       restoredTraitByCurrentTrait.set(currentTrait, restoredTrait)
     })
     const extraTraits = new Set(extras)
-    const mergedTraits = currentCategory.category.traits.map((trait) =>
+    const mergedTraits = currentCategory.traits.map((trait) =>
       extraTraits.has(trait) ? { ...trait, category: backupCategory.name } : restoredTraitByCurrentTrait.get(trait),
     )
 
     const restoredCategory = {
-      ...currentCategory.category,
+      ...currentCategory,
       name: backupCategory.name,
       enabled: backupCategory.enabled !== false,
       selectionMode: getCategorySelectionMode(backupCategory),
       noneWeight: clampDecimal(backupCategory.noneWeight, 0, 100),
       traits: mergedTraits,
     }
-    restoredCategoryByCurrentCategory.set(currentCategory.category, restoredCategory)
+    restoredCategoryByCurrentCategory.set(currentCategory, restoredCategory)
     restoredCategoriesInBackupOrder.push(restoredCategory)
   }
 
@@ -4516,61 +4549,6 @@ function restoreProjectBackup(source, backup) {
     ruleCount: incompatibilities.length + traitCategoryConflicts.length + positionRules.length +
       (backup.source.categoryRequirements || []).length + (backup.source.categoryConflicts || []).length,
   }
-}
-
-function matchBackupTraits(currentTraits, backupTraits) {
-  const backupCount = backupTraits.length
-  const currentCount = currentTraits.length
-  const impossible = Number.NEGATIVE_INFINITY
-  const scores = Array.from({ length: backupCount + 1 }, () => Array(currentCount + 1).fill(impossible))
-  const choices = Array.from({ length: backupCount }, () => Array(currentCount).fill(''))
-
-  for (let currentIndex = 0; currentIndex <= currentCount; currentIndex += 1) {
-    scores[backupCount][currentIndex] = 0
-  }
-
-  for (let backupIndex = backupCount - 1; backupIndex >= 0; backupIndex -= 1) {
-    for (let currentIndex = currentCount - 1; currentIndex >= 0; currentIndex -= 1) {
-      if (currentCount - currentIndex < backupCount - backupIndex) continue
-      const matchScore =
-        scoreTraitMatch(currentTraits[currentIndex], backupTraits[backupIndex]) +
-        scores[backupIndex + 1][currentIndex + 1]
-      const skipScore = scores[backupIndex][currentIndex + 1]
-      if (matchScore >= skipScore) {
-        scores[backupIndex][currentIndex] = matchScore
-        choices[backupIndex][currentIndex] = 'match'
-      } else {
-        scores[backupIndex][currentIndex] = skipScore
-        choices[backupIndex][currentIndex] = 'skip'
-      }
-    }
-  }
-
-  const matches = []
-  const extras = []
-  let backupIndex = 0
-  let currentIndex = 0
-  while (currentIndex < currentCount) {
-    if (backupIndex < backupCount && choices[backupIndex][currentIndex] === 'match') {
-      matches.push(currentTraits[currentIndex])
-      backupIndex += 1
-    } else {
-      extras.push(currentTraits[currentIndex])
-    }
-    currentIndex += 1
-  }
-
-  if (matches.length !== backupCount) {
-    throw new Error('Could not match every backed-up trait to the loaded source.')
-  }
-  return { matches, extras }
-}
-
-function scoreTraitMatch(currentTrait, backupTrait) {
-  if (getTraitId(currentTrait) === backupTrait.id) return 1000
-  if (currentTrait.originalName === backupTrait.originalName) return 10
-  if (cleanName(currentTrait.originalName || currentTrait.name) === cleanName(backupTrait.originalName || backupTrait.name)) return 5
-  return -100
 }
 
 function findInvalidRuleReference(source) {
