@@ -37,6 +37,8 @@ import { getFileImportPath, planFolderCategories, rememberDroppedFilePath } from
 import { matchBackupCategory, matchBackupTraits, restoreRenderOrder } from './projectBackup.js'
 import { buildTraitUsageSummary } from './traitUsage.js'
 import { togglePreviewTraitKeys } from './traitPreview.js'
+import { mergePsdSources } from './psdMerge.js'
+import { PREVIEW_BATCH_SIZE, selectGifFrameIndexes, selectPreviewPage } from './previewPagination.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
@@ -117,10 +119,13 @@ function App() {
   const [samplePreviews, setSamplePreviews] = useState([])
   const [sampleCollage, setSampleCollage] = useState(null)
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false)
+  const [samplePreviewOffset, setSamplePreviewOffset] = useState(0)
+  const [sampleHasMore, setSampleHasMore] = useState(false)
   const [generationSummaryOpen, setGenerationSummaryOpen] = useState(false)
   const [generationPlan, setGenerationPlan] = useState(null)
   const [gifFrameCount, setGifFrameCount] = useState(7)
   const [gifBusy, setGifBusy] = useState(false)
+  const [gifGenerationCount, setGifGenerationCount] = useState(0)
   const [previewBackground, setPreviewBackground] = useState('#ffffff')
   const [introOpen, setIntroOpen] = useState(() => readStoredValue(INTRO_ACCEPTED_KEY) !== 'yes')
   const [helpOpen, setHelpOpen] = useState(false)
@@ -170,6 +175,7 @@ function App() {
   const previewStageRef = useRef(null)
   const samplePreviewUrlsRef = useRef([])
   const sampleCollageUrlRef = useRef('')
+  const sampleCombinationInfoRef = useRef(null)
   const managerPreviewUrlsRef = useRef({})
   const managerPreviewSignaturesRef = useRef({})
   const managerPairPreviewUrlRef = useRef('')
@@ -397,7 +403,7 @@ function App() {
   const maxEditions = maxEditionsInfo.count
   const maxEditionsCapped = maxEditionsInfo.capped
   const oneOfOneCount = source?.oneOfOnes?.length || 0
-  const samplePreviewCount = source ? Math.min(16, Math.max(1, maxEditions)) : 16
+  const samplePreviewCount = source ? Math.min(16, Math.max(1, maxEditionsInfo.approximate ? 16 : maxEditions)) : 16
   const isMobileShareDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
     || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
   const pasteModifier = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'
@@ -601,40 +607,55 @@ function App() {
     }
   }, [traitEditorOpen, source, selectedCategoryIndex, selectedTraitIndex])
 
-  async function importLayeredFile(file) {
-    if (!file) return
+  async function importLayeredFiles(files) {
+    if (!files.length) return
     if (!(await ensureHolderAccess())) return
-    if (isProcreateFile(file)) {
-      await importProcreateFile(file)
+    if (files.length === 1 && isProcreateFile(files[0])) {
+      await importProcreateFile(files[0])
       return
     }
-    if (!isPsdFile(file)) {
-      setStatus('Drop a PSD or Procreate file into the layered artwork source.')
+    if (!files.every(isPsdFile)) {
+      setStatus('Choose only PSD files to merge. Procreate files provide a flattened preview, not editable layers.')
       return
     }
 
     setBusy(true)
-    setStatus('Reading PSD layers...')
+    setStatus(`Reading ${files.length} PSD ${files.length === 1 ? 'file' : 'files'}...`)
     try {
-      if (file.size > LARGE_PSD_WARNING_SIZE) {
+      const totalSize = files.reduce((total, file) => total + file.size, 0)
+      if (totalSize > LARGE_PSD_WARNING_SIZE) {
         const shouldTryLargePsd = window.confirm(
-          `${file.name} is ${formatBytes(file.size)}. Large PSDs can exceed browser memory while layers are unpacked. Try importing it anyway?`,
+          `The selected PSD${files.length === 1 ? '' : 's'} total ${formatBytes(totalSize)}. Large PSDs can exceed browser memory while layers are unpacked. Try importing anyway?`,
         )
         if (!shouldTryLargePsd) {
-          throw new Error('PSD import cancelled. You can still use Base image + Trait folders for very large artwork.')
+          setStatus('PSD import cancelled. You can still use Base image + Trait folders for very large artwork.')
+          return
         }
       }
-      const buffer = await file.arrayBuffer()
-      const psd = readPsd(buffer, {
-        useRawData: true,
-        skipCompositeImageData: true,
-        skipThumbnail: true,
-        skipLinkedFilesData: true,
-      })
-      const estimatedBitmapBytes = estimatePsdBitmapBytes(psd)
+      const parsedSources = []
+      let estimatedBitmapBytes = 0
+      for (const [index, file] of files.entries()) {
+        setStatus(`Reading PSD ${index + 1} of ${files.length}: ${file.name}...`)
+        const buffer = await file.arrayBuffer()
+        const psd = readPsd(buffer, {
+          useRawData: true,
+          skipCompositeImageData: true,
+          skipThumbnail: true,
+          skipLinkedFilesData: true,
+        })
+        if (parsedSources.length && (psd.width !== parsedSources[0].width || psd.height !== parsedSources[0].height)) {
+          throw new Error(`${file.name} is ${psd.width} × ${psd.height}px, but ${files[0].name} is ${parsedSources[0].width} × ${parsedSources[0].height}px. PSD canvases must match to merge.`)
+        }
+        estimatedBitmapBytes += estimatePsdBitmapBytes(psd)
+        parsedSources.push(parsePsd(psd, file.name, files.length > 1))
+      }
       const lowMemoryMode = estimatedBitmapBytes > RETAINED_PSD_BITMAP_LIMIT
-      if (!lowMemoryMode) decodePsdLayerPixels(psd.children)
-      const parsed = parsePsd(psd, file.name)
+      const parsed = mergePsdSources(parsedSources)
+      parsed.categories = sortCategoriesForRender(parsed.categories)
+      if (!lowMemoryMode) {
+        for (const parsedSource of parsedSources) decodePsdLayerPixels(parsedSource.psdChildren)
+      }
+      delete parsed.psdChildren
       parsed.lowMemoryMode = lowMemoryMode
       parsed.estimatedBitmapBytes = estimatedBitmapBytes
       setSource(parsed)
@@ -646,8 +667,8 @@ function App() {
       setPositionRuleFolderDraft(emptyRuleFolderDraft)
       setStatus(
         lowMemoryMode
-          ? `Loaded ${parsed.categories.length} categories from ${file.name} in low-memory mode (${formatBytes(estimatedBitmapBytes)} expanded). Layers decode as needed.`
-          : `Loaded ${parsed.categories.length} categories from ${file.name}.`,
+          ? `Loaded ${parsed.categories.length} categories from ${files.length === 1 ? files[0].name : `${files.length} PSDs`} in low-memory mode (${formatBytes(estimatedBitmapBytes)} expanded). Layers decode as needed.`
+          : `Loaded ${parsed.categories.length} categories from ${files.length === 1 ? files[0].name : `${files.length} merged PSDs`}.`,
       )
       await renderPreview(parsed)
     } catch (error) {
@@ -693,8 +714,8 @@ function App() {
   }
 
   async function handlePsdUpload(event) {
-    const file = event.target.files?.[0]
-    await importLayeredFile(file)
+    const files = Array.from(event.target.files || [])
+    await importLayeredFiles(files)
     event.target.value = ''
   }
 
@@ -739,11 +760,11 @@ function App() {
       setStatus('No file was found in that drop.')
       return
     }
-    if (target === 'psd') await importLayeredFile(file)
+    if (target === 'psd') await importLayeredFiles([file])
     if (target === 'base') await selectBaseFile(file)
     if (target === 'preview') {
       if (isPsdFile(file) || isProcreateFile(file)) {
-        await importLayeredFile(file)
+        await importLayeredFiles([file])
       } else if (isArtworkFile(file)) {
         await selectBaseFile(file)
       } else {
@@ -759,6 +780,14 @@ function App() {
 
     try {
       const files = await collectDroppedFiles(event.dataTransfer)
+      if (files.length && files.every(isPsdFile)) {
+        await importLayeredFiles(files)
+        return
+      }
+      if (files.some(isPsdFile)) {
+        setStatus('Choose only PSD files together to merge them. Upload other artwork separately.')
+        return
+      }
       const isFolderDrop = files.length > 1 || files.some((file) => getFileImportPath(file).includes('/'))
       if (isFolderDrop) {
         await importFolderFiles(files)
@@ -770,7 +799,7 @@ function App() {
         setStatus('No PSD, Procreate artwork, or trait folder was found in that drop.')
         return
       }
-      if (isPsdFile(file) || isProcreateFile(file)) await importLayeredFile(file)
+      if (isPsdFile(file) || isProcreateFile(file)) await importLayeredFiles([file])
       else if (isArtworkFile(file)) await selectBaseFile(file)
       else setStatus('Drop a PSD, Procreate file, image, or folder containing trait images.')
     } catch (error) {
@@ -1818,6 +1847,10 @@ function App() {
     sampleCollageUrlRef.current = ''
     setSamplePreviews([])
     setSampleCollage(null)
+    setSamplePreviewOffset(0)
+    setSampleHasMore(false)
+    setGifGenerationCount(0)
+    sampleCombinationInfoRef.current = null
   }
 
   function closeSamplePreview() {
@@ -1878,7 +1911,7 @@ function App() {
 
   async function generatePreviewGif() {
     const frameCount = Math.min(gifFrameCount, samplePreviews.length, 7)
-    if (frameCount < 5 || gifBusy) {
+    if (frameCount < 5 || gifBusy || busy) {
       setStatus('Render at least five collection samples before generating a GIF.')
       return
     }
@@ -1894,8 +1927,10 @@ function App() {
       if (!context) throw new Error('Could not create the GIF canvas.')
       const encoder = GIFEncoder()
 
-      for (let index = 0; index < frameCount; index += 1) {
-        const { image, cleanup } = await decodeCollageImage(samplePreviews[index].blob)
+      const frameIndexes = selectGifFrameIndexes(samplePreviews.length, frameCount, gifGenerationCount)
+      for (let index = 0; index < frameIndexes.length; index += 1) {
+        const previewIndex = frameIndexes[index]
+        const { image, cleanup } = await decodeCollageImage(samplePreviews[previewIndex].blob)
         context.fillStyle = previewBackground
         context.fillRect(0, 0, size, size)
         const scale = Math.min(size / image.width, size / image.height)
@@ -1941,6 +1976,7 @@ function App() {
       const gifUrl = URL.createObjectURL(gifBlob)
       downloadBlobUrl(gifUrl, `${slugify(project.name)}-preview.gif`)
       window.setTimeout(() => URL.revokeObjectURL(gifUrl), 30_000)
+      setGifGenerationCount((count) => count + 1)
       setStatus(`Downloaded a ${frameCount}-image collection GIF with a Trait Forge end card.`)
     } catch (error) {
       setStatus(getErrorMessage(error, 'Could not generate the collection GIF.'))
@@ -1949,7 +1985,7 @@ function App() {
     }
   }
 
-  async function generateSamplePreview() {
+  async function generateSamplePreview(nextBatch = false) {
     if (!(await ensureHolderAccess())) return
     if (!source?.categories?.length || busy) {
       setStatus('Load a PSD or folder set first.')
@@ -1963,22 +1999,33 @@ function App() {
       return
     }
 
-    const validCombinationInfo = countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
+    const validCombinationInfo = nextBatch && sampleCombinationInfoRef.current
+      ? sampleCombinationInfoRef.current
+      : countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
     if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
       setStatus('No valid preview combinations remain. Remove a trait rule or restore more traits.')
       return
     }
 
-    const sampleCount = Math.min(16, Math.max(1, validCombinationInfo.count))
-    clearSamplePreviews()
+    const offset = nextBatch ? samplePreviewOffset + samplePreviews.length : 0
+    const requestedCount = validCombinationInfo.approximate || validCombinationInfo.capped
+      ? offset + PREVIEW_BATCH_SIZE + 1
+      : Math.min(validCombinationInfo.count, offset + PREVIEW_BATCH_SIZE + 1)
+    const previewAttemptLimit = Math.min(20_000, Math.max(1_000, validCombinationInfo.count * 50))
+    if (nextBatch && !sampleHasMore) return
+    if (!nextBatch) {
+      clearSamplePreviews()
+      sampleCombinationInfoRef.current = validCombinationInfo
+    }
     setSamplePreviewOpen(true)
     setBusy(true)
-    setStatus(`Rendering ${sampleCount} sample artworks...`)
+    setStatus(`Rendering sample artworks ${offset + 1}–${Math.min(offset + PREVIEW_BATCH_SIZE, requestedCount)}...`)
     const createdUrls = []
     try {
-      const combos = project.mode === 'all' && !hasOrderedCategories(activeCategories)
-        ? buildCombinationsUpTo(activeCategories, rules, sampleCount)
-        : buildUniqueRandomCombinations(activeCategories, sampleCount, project.seed, rules)
+      const selectedCombos = project.mode === 'all' && !hasOrderedCategories(activeCategories)
+        ? buildCombinationsUpTo(activeCategories, rules, requestedCount)
+        : buildUniqueRandomCombinations(activeCategories, requestedCount, project.seed, rules, previewAttemptLimit)
+      const { page: combos, hasMore } = selectPreviewPage(selectedCombos, offset)
       if (!combos.length) throw new Error('No valid sample combinations could be selected.')
 
       const previews = []
@@ -1993,7 +2040,7 @@ function App() {
         previews.push({
           url,
           blob,
-          edition: index + 1,
+          edition: offset + index + 1,
           traits: combos[index]
             .filter((trait) => !trait.isNone)
             .map((trait) => `${trait.category}: ${getTraitMetadataName(trait)}`),
@@ -2003,21 +2050,23 @@ function App() {
           await waitForPaint()
         }
       }
-      samplePreviewUrlsRef.current = createdUrls
-      setSamplePreviews(previews)
-      setGifFrameCount(Math.min(7, previews.length))
       setStatus('Building an 8-item sharing collage…')
       const collageBlob = await buildSampleCollage(previews.slice(0, 8), project.name, previewBackground)
       const collageUrl = URL.createObjectURL(collageBlob)
+      samplePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      if (sampleCollageUrlRef.current) URL.revokeObjectURL(sampleCollageUrlRef.current)
+      samplePreviewUrlsRef.current = createdUrls
       sampleCollageUrlRef.current = collageUrl
+      setSamplePreviews(previews)
       setSampleCollage({ blob: collageBlob, url: collageUrl, count: Math.min(8, previews.length) })
-      setStatus(`Preview ready. These ${previews.length} samples use the current seed, rarities, and trait rules.`)
+      setSamplePreviewOffset(offset)
+      setSampleHasMore(hasMore)
+      setGifFrameCount((current) => previews.length >= 5 ? Math.min(Math.max(current, 5), 7, previews.length) : 5)
+      setGifGenerationCount(0)
+      setStatus(`Preview ready: samples ${offset + 1}–${offset + previews.length} use the current seed, rarities, and trait rules.`)
     } catch (error) {
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
-      samplePreviewUrlsRef.current = []
-      setSamplePreviews([])
-      setSampleCollage(null)
-      setSamplePreviewOpen(false)
+      if (!nextBatch) setSamplePreviewOpen(false)
       setStatus(getErrorMessage(error, 'Could not render sample artworks.'))
     } finally {
       setBusy(false)
@@ -2369,7 +2418,7 @@ function App() {
             <Layers3 size={22} />
             <span>
               <strong>PSD / Procreate / trait folders</strong>
-              <small>Drop one file, one folder, or several folders here.</small>
+              <small>Choose or drop several PSDs to merge; folders and Procreate files also work.</small>
             </span>
           </button>
           <div className="split-row">
@@ -2448,7 +2497,7 @@ function App() {
           </button>
           <p className="chance-note">Load the matching PSD, Procreate artwork, or trait folder first, then restore its JSON backup.</p>
 
-          <input ref={psdInputRef} className="hidden" type="file" accept=".psd,.procreate,image/vnd.adobe.photoshop,application/x-procreate" onChange={handlePsdUpload} />
+          <input ref={psdInputRef} className="hidden" type="file" accept=".psd,.procreate,image/vnd.adobe.photoshop,application/x-procreate" multiple onChange={handlePsdUpload} />
           <input ref={baseInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,.procreate,application/x-procreate" onChange={handleBaseUpload} />
           <input ref={folderInputRef} className="hidden" type="file" webkitdirectory="true" directory="" multiple onChange={handleFolderUpload} />
           <input ref={oneOfOneInputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,.procreate,application/x-procreate" webkitdirectory="true" directory="" multiple onChange={handleOneOfOneUpload} />
@@ -2570,7 +2619,7 @@ function App() {
                 </div>
               ))
             ) : (
-              <p className="empty-state">Upload one layered PSD or Procreate artwork, or choose a base image and one directory containing trait folders.</p>
+              <p className="empty-state">Upload one or several layered PSDs, a Procreate artwork, or choose a base image and trait folders.</p>
             )}
           </div>
 
@@ -2633,8 +2682,8 @@ function App() {
           ) : (
             <div className="preview-empty">
               <Upload size={36} />
-              <span>Drop a PSD, Procreate file, base image, or trait folders here.</span>
-              <small>One folder, nested folders, and several folders are supported.</small>
+              <span>Drop PSD files, a Procreate file, base image, or trait folders here.</span>
+              <small>Several PSDs with matching canvas sizes merge into one project.</small>
             </div>
           )}
         </section>
@@ -2754,7 +2803,7 @@ function App() {
             </div>
           </details>
 
-          <button className="sample-preview-action" type="button" onClick={generateSamplePreview} disabled={busy || !source}>
+          <button className="sample-preview-action" type="button" onClick={() => generateSamplePreview()} disabled={busy || !source}>
             {busy && samplePreviewOpen ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
             Preview {samplePreviewCount} {samplePreviewCount === 1 ? 'sample' : 'samples'}
           </button>
@@ -3054,6 +3103,13 @@ function App() {
                 <X size={18} />
               </button>
             </header>
+            <div className="sample-preview-toolbar">
+              <span>{samplePreviews.length ? `Samples ${samplePreviewOffset + 1}–${samplePreviewOffset + samplePreviews.length}` : 'Preparing samples'}</span>
+              <button type="button" disabled={busy || gifBusy || !sampleHasMore} onClick={() => generateSamplePreview(true)}>
+                {busy ? <Loader2 className="spin" size={16} /> : <Shuffle size={16} />}
+                {busy ? 'Rendering next batch…' : sampleHasMore ? 'Next 16 samples' : 'All samples shown'}
+              </button>
+            </div>
             {samplePreviews.length ? (
               <div className="sample-preview-grid">
                 {samplePreviews.map((preview) => (
@@ -3083,17 +3139,17 @@ function App() {
               <div className="sample-preview-footer-actions">
                 <label>
                   GIF frames
-                  <select value={gifFrameCount} disabled={gifBusy || samplePreviews.length < 5} onChange={(event) => setGifFrameCount(Number(event.target.value))}>
+                  <select value={gifFrameCount} disabled={busy || gifBusy || samplePreviews.length < 5} onChange={(event) => setGifFrameCount(Number(event.target.value))}>
                     {[5, 6, 7].filter((count) => count <= samplePreviews.length).map((count) => (
                       <option value={count} key={count}>{count}</option>
                     ))}
                   </select>
                 </label>
-                <button className="gif-preview-action" type="button" disabled={gifBusy || samplePreviews.length < 5} onClick={generatePreviewGif}>
+                <button className="gif-preview-action" type="button" disabled={busy || gifBusy || samplePreviews.length < 5} onClick={generatePreviewGif}>
                   {gifBusy ? <Loader2 className="spin" size={16} /> : <Film size={16} />}
-                  {gifBusy ? 'Generating GIF…' : 'Generate GIF'}
+                  {gifBusy ? 'Generating GIF…' : gifGenerationCount && samplePreviews.length > gifFrameCount ? 'Regenerate GIF with new frames' : 'Generate GIF'}
                 </button>
-                <button type="button" disabled={!sampleCollage || busy} onClick={shareSampleCollage}>
+                <button type="button" disabled={!sampleCollage || busy || gifBusy} onClick={shareSampleCollage}>
                   <Share2 size={16} />
                   Share {sampleCollage?.count || 8}-item collage to X
                 </button>
@@ -4576,7 +4632,7 @@ function findInvalidRuleReference(source) {
   return ''
 }
 
-function parsePsd(psd, fileName) {
+function parsePsd(psd, fileName, allowEmpty = false) {
   const rootChildren = psd.children || []
   const baseLayers = rootChildren.filter((child) => !child.children?.length && hasRenderableCanvas(child))
   const categories = sortCategoriesForRender(
@@ -4592,7 +4648,7 @@ function parsePsd(psd, fileName) {
       .filter((category) => category.traits.length),
   )
 
-  if (!categories.length) {
+  if (!categories.length && !allowEmpty) {
     throw new Error('No trait folders found. Put traits inside root-level PSD groups.')
   }
 
@@ -4602,6 +4658,7 @@ function parsePsd(psd, fileName) {
     width: psd.width,
     height: psd.height,
     baseLayers,
+    psdChildren: psd.children,
     categories,
     oneOfOnes: [],
     incompatibilities: [],
@@ -4831,12 +4888,11 @@ function categoryPriority(name) {
   return 15
 }
 
-function buildUniqueRandomCombinations(categories, count, seed, rules = {}) {
+function buildUniqueRandomCombinations(categories, count, seed, rules = {}, attemptLimit = Math.max(count * 50, 1000)) {
   const combos = []
   const seen = new Set()
   let attempt = 0
-  const maxAttempts = Math.max(count * 50, 1000)
-  while (combos.length < count && attempt < maxAttempts) {
+  while (combos.length < count && attempt < attemptLimit) {
     const combo = buildRandomCombination(categories, seed, attempt, rules, combos.length)
     if ((!combo.length && categories.length) || findCombinationViolation(combo, rules)) {
       attempt += 1

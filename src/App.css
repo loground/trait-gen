@@ -958,12 +958,43 @@ button:disabled {
   width: min(1120px, 100%);
   max-height: min(860px, calc(100svh - 48px));
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid #c6d0dd;
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 28px 80px rgba(18, 27, 39, 0.28);
+}
+
+.sample-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px;
+  color: #45576c;
+  background: #fff;
+  border-bottom: 1px solid #d8dee8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sample-preview-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  color: #fff;
+  background: #3859d6;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sample-preview-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .generation-summary-modal {
@@ -1877,6 +1908,18 @@ button:disabled {
 
 .sample-preview-footer .gif-preview-action:hover:not(:disabled) {
   background: #2947bd;
+}
+
+@media (max-width: 950px) {
+  .sample-preview-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sample-preview-footer-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
 }
 
 .rule-manager-tabs {

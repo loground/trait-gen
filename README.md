@@ -87,5 +87,9 @@ browser.
 
 ## Generation model
 
+Select multiple layered PSD files in the Sources picker, or drop them together, to combine their trait folders into one project. All PSDs must use the same canvas dimensions. Folders with matching names combine their traits; the first PSD containing root-level base layers supplies the base image. Files are read in selection order, and duplicate trait IDs are made unique. For large files, the importer decodes layer pixels as needed. Procreate files provide flattened previews, so export layered PSDs from Procreate for this workflow.
+
+The collection preview shows up to 16 combinations at a time. Use **Next 16 samples** to see the next unique batch. The sharing collage and GIF use the displayed batch; generate the GIF again to use another set of frames from that batch.
+
 Image composition runs in the browser. Large collections should be generated on
 a capable desktop browser because the work can require significant memory and CPU.
