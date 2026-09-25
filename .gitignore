@@ -29,3 +29,7 @@ dist-ssr
 .env*
 !.env.example
 .private/
+
+# Generated artwork and exports
+/output/
+/outputs/

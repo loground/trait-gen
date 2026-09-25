@@ -3707,3 +3707,19 @@ input[type='range'] {
 .wallet-buy-link:hover {
   background: #f5f7fa;
 }
+
+.psd-one-of-ones-picker {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.psd-one-of-ones-picker select {
+  width: 100%;
+  min-width: 0;
+}
+
+.psd-one-of-ones-picker small {
+  color: #75633e;
+  line-height: 1.5;
+}

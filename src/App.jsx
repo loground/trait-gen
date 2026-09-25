@@ -38,6 +38,7 @@ import { matchBackupCategory, matchBackupTraits, restoreRenderOrder } from './pr
 import { buildTraitUsageSummary } from './traitUsage.js'
 import { togglePreviewTraitKeys } from './traitPreview.js'
 import { mergePsdSources } from './psdMerge.js'
+import { restorePsdOneOfOneFolder, selectPsdOneOfOneFolder } from './psdOneOfOnes.js'
 import { PREVIEW_BATCH_SIZE, selectGifFrameIndexes, selectPreviewPage } from './previewPagination.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
@@ -910,6 +911,20 @@ function App() {
       await importOneOfOneFiles(files)
     } catch (error) {
       setStatus(getErrorMessage(error, 'Could not read that 1/1 folder.'))
+    }
+  }
+
+  async function choosePsdOneOfOneFolder(value) {
+    if (!source || busy) return
+    const nextSource = selectPsdOneOfOneFolder(source, value === '' ? null : Number(value))
+    setSource(nextSource)
+    setSelectedCategoryIndex(0)
+    setExpandedCategoryIndices([])
+    setStatus(value === '' ? 'PSD folder restored to collection traits.' : 'PSD folder selected as 1/1s. Each artwork is included once. Rules involving this folder were removed.')
+    try {
+      await renderPreview(nextSource)
+    } catch (error) {
+      setStatus(getErrorMessage(error, 'Could not refresh the preview.'))
     }
   }
 
@@ -2470,6 +2485,22 @@ function App() {
               </span>
               <b>{source?.oneOfOnes?.length || 0}</b>
             </button>
+            {source.type === 'psd' && (
+              <label className="psd-one-of-ones-picker">
+                <span>Use a PSD folder for 1/1s</span>
+                <select
+                  value={source.psdOneOfOneFolder ? Math.min(source.psdOneOfOneFolder.index, source.categories.length) : ''}
+                  onChange={(event) => choosePsdOneOfOneFolder(event.target.value)}
+                  disabled={busy}
+                >
+                  <option value="">None</option>
+                  {restorePsdOneOfOneFolder(source).categories.map((category, index) => (
+                    <option key={index} value={index} disabled={!category.traits.length}>{category.name}</option>
+                  ))}
+                </select>
+                <small>Each layer or subgroup is one complete artwork, without base layers or other traits.</small>
+              </label>
+            )}
             {!!source?.oneOfOnes?.length && (
               <div className="one-of-ones-list">
                 {source.oneOfOnes.map((artwork, index) => (
@@ -4340,7 +4371,19 @@ function OneOfOneThumbnail({ artwork }) {
   useEffect(() => {
     const canvas = canvasRef.current
     const image = artwork?.image
-    if (!canvas || !image?.naturalWidth || !image.naturalHeight) return
+    if (!canvas) return
+    if (artwork.psdFolderArtwork) {
+      const context = canvas.getContext('2d')
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      const scale = Math.min(canvas.width / artwork.width, canvas.height / artwork.height)
+      context.save()
+      context.translate((canvas.width - artwork.width * scale) / 2, (canvas.height - artwork.height * scale) / 2)
+      context.scale(scale, scale)
+      drawTraitArtwork(context, artwork.trait, { x: 0, y: 0, scale: 1 }, artwork)
+      context.restore()
+      return
+    }
+    if (!image?.naturalWidth || !image.naturalHeight) return
     const context = canvas.getContext('2d')
     const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight)
     const width = image.naturalWidth * scale
@@ -4419,6 +4462,11 @@ function ManagerRuleTraitPreview({ url, label }) {
 }
 
 function buildProjectBackup(source, project, savedAt = new Date().toISOString()) {
+  const psdOneOfOneFolderIndex = source.psdOneOfOneFolder
+    ? Math.min(source.psdOneOfOneFolder.index, source.categories.length) : null
+  const oneOfOnes = source.oneOfOnes
+  source = restorePsdOneOfOneFolder(source)
+  source = { ...source, oneOfOnes }
   const traitRecords = source.categories.flatMap((category, categoryIndex) =>
     category.traits.map((trait, traitIndex) => ({
       categoryIndex,
@@ -4448,6 +4496,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
     savedAt,
     project,
     source: {
+      psdOneOfOneFolderIndex,
       type: source.type,
       name: source.name,
       width: source.width,
@@ -4489,6 +4538,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
 }
 
 function restoreProjectBackup(source, backup) {
+  source = restorePsdOneOfOneFolder(source)
   if (backup?.version !== 1 || !backup.source?.categories?.length) {
     throw new Error('This is not a supported Trait Forge project backup.')
   }
@@ -4572,12 +4622,12 @@ function restoreProjectBackup(source, backup) {
     secondOffsetY: Math.round(Number(rule.secondOffsetY) || 0),
     secondScale: normalizeRuleScale(rule.secondScale),
   }))
-  const restoredSource = {
+  let restoredSource = {
     ...source,
     categories: restoredCategories,
     oneOfOnes: (source.oneOfOnes || []).map((artwork) => {
       const backupArtwork = (backup.source.oneOfOnes || []).find((candidate) => (
-        candidate.id === artwork.id || candidate.originalName === artwork.originalName || candidate.fileName === artwork.fileName
+        candidate.id === artwork.id || candidate.originalName === artwork.originalName || (candidate.fileName && candidate.fileName === artwork.fileName)
       ))
       return backupArtwork ? { ...artwork, name: backupArtwork.name } : artwork
     }),
@@ -4589,6 +4639,19 @@ function restoreProjectBackup(source, backup) {
       requiredTrait: remapTraitId(rule.requiredTrait),
     })),
     categoryConflicts: backup.source.categoryConflicts || [],
+  }
+  if (Number.isInteger(backup.source.psdOneOfOneFolderIndex)) {
+    restoredSource = selectPsdOneOfOneFolder(restoredSource, backup.source.psdOneOfOneFolderIndex)
+    const savedArtworks = (backup.source.oneOfOnes || []).map((artwork) => ({
+      ...artwork,
+      id: artwork.id?.startsWith('psd-one-of-one::')
+        ? `psd-one-of-one::${remapTraitId(artwork.id.slice('psd-one-of-one::'.length))}` : artwork.id,
+    }))
+    const backedUpTraitIds = new Set(backup.source.categories[backup.source.psdOneOfOneFolderIndex].traits.map((trait) => remapTraitId(trait.id)))
+    restoredSource.oneOfOnes = restoredSource.oneOfOnes.filter((artwork) => !artwork.psdFolderArtwork || !backedUpTraitIds.has(artwork.trait.id) || savedArtworks.some((saved) => saved.id === artwork.id)).map((artwork) => {
+      const saved = savedArtworks.find((candidate) => candidate.id === artwork.id)
+      return saved ? { ...artwork, name: saved.name } : artwork
+    })
   }
   const invalidRule = findInvalidRuleReference(restoredSource)
   if (invalidRule) throw new Error(invalidRule)
@@ -5408,6 +5471,9 @@ function getOneOfOneName(artwork) {
 }
 
 async function renderOneOfOneArtwork(artwork, options = {}) {
+  if (artwork.psdFolderArtwork) {
+    return renderArtwork({ type: 'psd', width: artwork.width, height: artwork.height, baseLayers: [] }, [artwork.trait], { ...options, includeBase: false })
+  }
   const image = artwork?.image
   if (!image?.naturalWidth || !image.naturalHeight) throw new Error(`Could not render ${getOneOfOneName(artwork)}.`)
   const canvas = document.createElement('canvas')
