@@ -3757,3 +3757,16 @@ input[type='range'] {
 .ai-backup-help ol { padding-left: 20px; }
 .ai-backup-help li + li { margin-top: 8px; }
 .ai-prompt-example { padding: 10px; background: #eef3f8; color: #26374c; border-radius: 6px; }
+
+.rule-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.rule-pagination span {
+  color: var(--text-muted, #91a0b5);
+  font-size: 12px;
+}

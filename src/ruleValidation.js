@@ -1,21 +1,11 @@
+import { hasPairRule } from './ruleIndex.js'
+
 function getTraitId(trait) {
   return trait.id || `${trait.category}::${trait.originalName || trait.name}`
 }
 
 function getTraitName(trait) {
   return String(trait.name || trait.originalName || 'Untitled').trim() || 'Untitled'
-}
-
-function normalizePair(first, second) {
-  return [first, second].sort((left, right) => left.localeCompare(right))
-}
-
-function categoriesConflict(firstCategory, secondCategory, categoryConflicts = []) {
-  const [currentFirst, currentSecond] = normalizePair(firstCategory, secondCategory)
-  return categoryConflicts.some((rule) => {
-    const [first, second] = normalizePair(rule.first, rule.second)
-    return currentFirst === first && currentSecond === second
-  })
 }
 
 export function findCombinationViolation(combo, rules = {}) {
@@ -34,11 +24,7 @@ export function findCombinationViolation(combo, rules = {}) {
       if (firstTrait.isNone || secondTrait.isNone) continue
       const firstId = getTraitId(firstTrait)
       const secondId = getTraitId(secondTrait)
-      const conflict = (rules.incompatibilities || []).some(
-        (rule) =>
-          (rule.first === firstId && rule.second === secondId) ||
-          (rule.first === secondId && rule.second === firstId),
-      )
+      const conflict = hasPairRule(rules.incompatibilities, firstId, secondId)
       if (conflict) {
         return `${firstTrait.category} / ${getTraitName(firstTrait)} cannot appear with ${secondTrait.category} / ${getTraitName(secondTrait)}.`
       }
@@ -56,7 +42,7 @@ export function findCombinationViolation(combo, rules = {}) {
   const selectedCategories = [...new Set(combo.filter((trait) => !trait.isNone).map((trait) => trait.category))]
   for (let firstIndex = 0; firstIndex < selectedCategories.length; firstIndex += 1) {
     for (let secondIndex = firstIndex + 1; secondIndex < selectedCategories.length; secondIndex += 1) {
-      if (categoriesConflict(selectedCategories[firstIndex], selectedCategories[secondIndex], rules.categoryConflicts)) {
+      if (hasPairRule(rules.categoryConflicts, selectedCategories[firstIndex], selectedCategories[secondIndex])) {
         return `${selectedCategories[firstIndex]} cannot appear with ${selectedCategories[secondIndex]}.`
       }
     }
