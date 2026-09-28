@@ -3714,12 +3714,46 @@ input[type='range'] {
   font-size: 13px;
 }
 
-.psd-one-of-ones-picker select {
-  width: 100%;
+.psd-one-of-ones-picker {
   min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+}
+
+.psd-one-of-ones-picker .psd-one-of-ones-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.psd-one-of-ones-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  flex-shrink: 0;
+  margin: 0;
 }
 
 .psd-one-of-ones-picker small {
   color: #75633e;
   line-height: 1.5;
 }
+
+.ai-backup-help {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-backup-help .backup-action { margin-top: 0; }
+.ai-backup-help p { margin: 10px 0 0; }
+.ai-backup-help summary { margin-top: 10px; cursor: pointer; font-weight: 700; }
+.ai-backup-help ol { padding-left: 20px; }
+.ai-backup-help li + li { margin-top: 8px; }
+.ai-prompt-example { padding: 10px; background: #eef3f8; color: #26374c; border-radius: 6px; }

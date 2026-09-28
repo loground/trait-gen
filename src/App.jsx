@@ -30,6 +30,8 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
+import { createPositionPairFilter, getPositionPairs } from './positionPairs.js'
+import { buildAiBackup, describeRuleChanges, validateBackupRules } from './aiBackup.js'
 import { findCombinationViolation, findInvalidCombination } from './ruleValidation.js'
 import { buildSmartRarityProfile, isAccessoryCategory, isFaceCategory } from './smartRarities.js'
 import { extractProcreatePreview, isProcreateFile } from './procreate.js'
@@ -38,7 +40,7 @@ import { matchBackupCategory, matchBackupTraits, restoreRenderOrder } from './pr
 import { buildTraitUsageSummary } from './traitUsage.js'
 import { togglePreviewTraitKeys } from './traitPreview.js'
 import { mergePsdSources } from './psdMerge.js'
-import { restorePsdOneOfOneFolder, selectPsdOneOfOneFolder } from './psdOneOfOnes.js'
+import { restorePsdOneOfOneFolder, selectPsdOneOfOneFolders, getPsdOneOfOneFolderIndices } from './psdOneOfOnes.js'
 import { PREVIEW_BATCH_SIZE, selectGifFrameIndexes, selectPreviewPage } from './previewPagination.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
@@ -914,13 +916,15 @@ function App() {
     }
   }
 
-  async function choosePsdOneOfOneFolder(value) {
+  async function choosePsdOneOfOneFolder(index, checked) {
     if (!source || busy) return
-    const nextSource = selectPsdOneOfOneFolder(source, value === '' ? null : Number(value))
+    const currentIndices = getPsdOneOfOneFolderIndices(source)
+    const indices = checked ? [...currentIndices, index] : currentIndices.filter((value) => value !== index)
+    const nextSource = selectPsdOneOfOneFolders(source, indices)
     setSource(nextSource)
     setSelectedCategoryIndex(0)
     setExpandedCategoryIndices([])
-    setStatus(value === '' ? 'PSD folder restored to collection traits.' : 'PSD folder selected as 1/1s. Each artwork is included once. Rules involving this folder were removed.')
+    setStatus(checked ? 'PSD folder added to 1/1s. Each artwork is included once. Rules involving this folder were removed.' : 'PSD folder restored to collection traits.')
     try {
       await renderPreview(nextSource)
     } catch (error) {
@@ -1563,8 +1567,7 @@ function App() {
       const firstOptions = traitOptionsByCategory[Number(nextFolders.first)] || []
       const secondOptions = traitOptionsByCategory[Number(nextFolders.second)] || []
       const existingKeys = new Set((source?.positionRules || []).map(makeRuleKey))
-      const pairs = firstOptions
-        .flatMap((firstOption) => secondOptions.map((secondOption) => ({ firstOption, secondOption })))
+      const pairs = getPositionPairs(firstOptions, secondOptions, isPositionPairAllowed)
       const firstPair = pairs.find(({ firstOption, secondOption }) => !existingKeys.has(makeRuleKey({ first: firstOption.key, second: secondOption.key }))) || pairs[0]
       if (firstPair) {
         const firstTrait = findTraitByKey(source, firstPair.firstOption.key)
@@ -1583,6 +1586,10 @@ function App() {
         setActivePositionTraitSide('second')
         return
       }
+    }
+    if (nextFolders.first !== '' && nextFolders.second !== '') {
+      setPositionRuleDraft(emptyPositionRuleDraft)
+      return
     }
     const firstOption = folderIndex === '' ? null : traitOptionsByCategory[Number(folderIndex)]?.[0]
     selectPositionRuleTrait(side, firstOption?.key || '')
@@ -1652,6 +1659,7 @@ function App() {
       setStatus('Position rules require traits from two different folders.')
       return
     }
+    if (!isPositionPairAllowed(positionRuleDraft.first, positionRuleDraft.second)) return
     let rule = {
       first: positionRuleDraft.first,
       second: positionRuleDraft.second,
@@ -1684,7 +1692,7 @@ function App() {
     if (advancePair && positionRuleFolderDraft.first !== '' && positionRuleFolderDraft.second !== '') {
       const firstOptions = traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []
       const secondOptions = traitOptionsByCategory[Number(positionRuleFolderDraft.second)] || []
-      const pairs = firstOptions.flatMap((firstOption) => secondOptions.map((secondOption) => ({ firstOption, secondOption })))
+      const pairs = getPositionPairs(firstOptions, secondOptions, isPositionPairAllowed)
       const currentIndex = pairs.findIndex(({ firstOption, secondOption }) => (
         firstOption.key === positionRuleDraft.first && secondOption.key === positionRuleDraft.second
       ))
@@ -1717,11 +1725,11 @@ function App() {
     await renderPreview(nextSource)
   }
 
-  async function removePositionRule(ruleIndex) {
+  async function removePositionRule(ruleKey) {
     if (!source || busy) return
     const nextSource = {
       ...source,
-      positionRules: (source.positionRules || []).filter((_, index) => index !== ruleIndex),
+      positionRules: (source.positionRules || []).filter((rule) => makeRuleKey(rule) !== ruleKey),
     }
     setSource(nextSource)
     setStatus('Pair-specific position rule removed.')
@@ -2284,21 +2292,22 @@ function App() {
     setProject((current) => ({ ...current, [key]: value }))
   }
 
-  function downloadProjectBackup() {
+  function downloadProjectBackup(forAi = false) {
     if (!source) return
 
-    const backup = buildProjectBackup(source, project)
+    const snapshot = buildProjectBackup(source, project)
+    const backup = forAi ? buildAiBackup(snapshot) : snapshot
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${slugify(project.name)}-project-backup.json`
+    link.download = `${slugify(project.name)}-${forAi ? 'ask-ai' : 'project'}-backup.json`
     document.body.appendChild(link)
     link.click()
     link.remove()
     // Revoking synchronously can cancel an otherwise valid download in Safari.
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-    setStatus('Project backup downloaded. Keep this JSON with your PSD.')
+    setStatus(forAi ? 'AI backup downloaded. Give it to your AI with the changes you want, then restore the returned JSON here.' : 'Project backup downloaded. Keep this JSON with your PSD.')
   }
 
   async function chooseProjectBackup() {
@@ -2316,7 +2325,14 @@ function App() {
         setStatus('Restoring project backup...')
         try {
           const backup = JSON.parse(await file.text())
+          validateBackupRules(backup.source)
           const restored = restoreProjectBackup(source, backup)
+          if (backup.aiInstructions && !window.confirm(
+            `Review AI backup changes:\n\n${describeRuleChanges(source, restored.source)}\n\nThis restores the file’s project settings as well as its rules. Apply this backup? Preview samples afterward to check the result.`,
+          )) {
+            setStatus('AI backup restore cancelled. Your project is unchanged.')
+            return
+          }
           setProject(restored.project)
           setSource(restored.source)
           setSelectedCategoryIndex(0)
@@ -2343,6 +2359,8 @@ function App() {
     input.click()
   }
 
+  const isPositionPairAllowed = useMemo(() => createPositionPairFilter(source), [source])
+
   const traitOptionsByCategory = source?.categories?.map((category) =>
     category.traits.map((trait) => ({
       key: makeTraitKey(trait),
@@ -2355,7 +2373,7 @@ function App() {
 
   const incompatibilities = source?.incompatibilities || []
   const traitCategoryConflicts = source?.traitCategoryConflicts || []
-  const positionRules = source?.positionRules || []
+  const positionRules = (source?.positionRules || []).filter((rule) => isPositionPairAllowed(rule.first, rule.second))
   const categoryRequirements = source?.categoryRequirements || []
   const categoryConflicts = source?.categoryConflicts || []
   const categoryRequirementNames = new Set(categoryRequirements.map((rule) => rule.category))
@@ -2382,11 +2400,11 @@ function App() {
   const positionSecondTrait = source ? findTraitByKey(source, positionRuleDraft.second) : null
   const positionFirstOptions = positionRuleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []
   const positionSecondOptions = positionRuleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.second)] || []
-  const positionPairTotal = positionFirstOptions.length * positionSecondOptions.length
-  const positionPairNumber = positionRuleDraft.first && positionRuleDraft.second
-    ? positionFirstOptions.findIndex((option) => option.key === positionRuleDraft.first) * positionSecondOptions.length +
-      positionSecondOptions.findIndex((option) => option.key === positionRuleDraft.second) + 1
-    : 0
+  const positionPairs = getPositionPairs(positionFirstOptions, positionSecondOptions, isPositionPairAllowed)
+  const positionPairTotal = positionPairs.length
+  const positionPairNumber = positionPairs.findIndex(({ firstOption, secondOption }) =>
+    firstOption.key === positionRuleDraft.first && secondOption.key === positionRuleDraft.second) + 1
+  const positionPairAllowed = isPositionPairAllowed(positionRuleDraft.first, positionRuleDraft.second)
 
   function getPositionCanvasTransform(side, trait) {
     if (!source || !trait) return 'none'
@@ -2486,20 +2504,21 @@ function App() {
               <b>{source?.oneOfOnes?.length || 0}</b>
             </button>
             {source.type === 'psd' && (
-              <label className="psd-one-of-ones-picker">
-                <span>Use a PSD folder for 1/1s</span>
-                <select
-                  value={source.psdOneOfOneFolder ? Math.min(source.psdOneOfOneFolder.index, source.categories.length) : ''}
-                  onChange={(event) => choosePsdOneOfOneFolder(event.target.value)}
-                  disabled={busy}
-                >
-                  <option value="">None</option>
-                  {restorePsdOneOfOneFolder(source).categories.map((category, index) => (
-                    <option key={index} value={index} disabled={!category.traits.length}>{category.name}</option>
-                  ))}
-                </select>
-                <small>Each layer or subgroup is one complete artwork, without base layers or other traits.</small>
-              </label>
+              <fieldset className="psd-one-of-ones-picker" disabled={busy}>
+                <legend>Use PSD folders for 1/1s</legend>
+                {restorePsdOneOfOneFolder(source).categories.map((category, index) => (
+                  <label className="psd-one-of-ones-option" key={index}>
+                    <input
+                      type="checkbox"
+                      checked={getPsdOneOfOneFolderIndices(source).includes(index)}
+                      onChange={(event) => choosePsdOneOfOneFolder(index, event.target.checked)}
+                      disabled={!category.traits.length}
+                    />
+                    <span>{category.name}</span>
+                  </label>
+                ))}
+                <small>Select any number of folders. Each layer or subgroup is one complete artwork, without base layers or other traits. Uncheck a folder to return it to collection traits.</small>
+              </fieldset>
             )}
             {!!source?.oneOfOnes?.length && (
               <div className="one-of-ones-list">
@@ -2855,7 +2874,27 @@ function App() {
               : 'Generate ZIP'}
           </button>
 
-          <button className="download-link" type="button" onClick={downloadProjectBackup} disabled={busy || !source}>
+          <section className="ai-backup-help" aria-label="Ask AI to edit trait rules">
+            <button className="backup-action" type="button" onClick={() => downloadProjectBackup(true)} disabled={busy || !source}>
+              <HelpCircle size={18} />
+              Ask AI
+            </button>
+            <p>Download your backup with instructions for your own AI. No API key or AI connection needed.</p>
+            <details>
+              <summary>How to use Ask AI</summary>
+              <ol>
+                <li>Load your PSD or trait folders, then click <strong>Ask AI</strong>. Keep a regular project backup too, so you can undo changes.</li>
+                <li>Give the downloaded JSON file to your AI tool, such as Codex or Claude. Tell it which rules you want changed.</li>
+                <li>Ask it to follow the instructions inside the file and return the complete updated JSON file.</li>
+                <li>With the same artwork loaded here, click <strong>Restore project backup</strong> in Sources and select the returned file.</li>
+                <li>Review the rules in the trait manager and preview samples before generating your collection.</li>
+              </ol>
+              <p className="ai-prompt-example">Example: “Follow the instructions in this backup. Make the Red Hat trait incompatible with Long Hair. Keep everything else unchanged and return the updated JSON.”</p>
+              <p>The backup includes trait names and settings, not images. Share labeled screenshots separately if you want visual advice. This button downloads a file; it does not send anything to an AI service.</p>
+            </details>
+          </section>
+
+          <button className="download-link" type="button" onClick={() => downloadProjectBackup()} disabled={busy || !source}>
             <Archive size={18} />
             Download project backup
           </button>
@@ -3863,7 +3902,7 @@ function App() {
                   </span>
                   <strong>{positionRules.length}</strong>
                 </div>
-                <p>Choose two folders once. The first pair is selected automatically, and Save &amp; continue walks through every pair for you.</p>
+                <p>Choose two folders once. The first pair is selected automatically, and Save &amp; continue walks through available pairs. Blocked pairs are skipped.</p>
                 <div className="trait-picker-field">
                   <label>
                     First folder
@@ -3887,7 +3926,7 @@ function App() {
                     >
                       <option value="">Choose trait</option>
                       {(positionRuleFolderDraft.first === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.first)] || []).map((trait) => (
-                        <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>
+                        <option value={trait.key} key={trait.key} disabled={Boolean(positionRuleDraft.second) && !isPositionPairAllowed(trait.key, positionRuleDraft.second)}>{trait.traitLabel}</option>
                       ))}
                     </select>
                   </label>
@@ -3925,7 +3964,7 @@ function App() {
                     >
                       <option value="">Choose trait</option>
                       {(positionRuleFolderDraft.second === '' ? [] : traitOptionsByCategory[Number(positionRuleFolderDraft.second)] || []).map((trait) => (
-                        <option value={trait.key} key={trait.key}>{trait.traitLabel}</option>
+                        <option value={trait.key} key={trait.key} disabled={Boolean(positionRuleDraft.first) && !isPositionPairAllowed(trait.key, positionRuleDraft.first)}>{trait.traitLabel}</option>
                       ))}
                     </select>
                   </label>
@@ -3940,7 +3979,7 @@ function App() {
                     onScaleChange={(value) => updatePositionRuleScale('second', value)}
                   />
                 </div>
-                {positionRuleDraft.first && positionRuleDraft.second && (
+                {positionPairAllowed && (
                   <div className="pair-position-preview interactive-position-preview">
                     <div className="pair-position-preview-header">
                       <span>Pair {Math.max(1, positionPairNumber)} of {positionPairTotal}</span>
@@ -3999,11 +4038,17 @@ function App() {
                     </div>
                   </div>
                 )}
+                {positionRuleFolderDraft.first !== '' && positionRuleFolderDraft.second !== '' && positionPairTotal === 0 && (
+                  <p className="manager-empty">No available pairs in these folders. All pairs are blocked.</p>
+                )}
+                {positionRuleDraft.first && positionRuleDraft.second && !positionPairAllowed && (
+                  <p className="manager-empty">This pair is blocked. Choose another pair to edit its position.</p>
+                )}
                 <div className="position-rule-actions">
                   <button
                     className="rule-add"
                     type="button"
-                    disabled={busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second}
+                    disabled={busy || !positionPairAllowed}
                     onClick={() => addPositionRule(true)}
                   >
                     <ArrowDown size={16} />
@@ -4012,7 +4057,7 @@ function App() {
                   <button
                     className="rule-add"
                     type="button"
-                    disabled={busy || !positionRuleDraft.first || !positionRuleDraft.second || positionRuleDraft.first === positionRuleDraft.second}
+                    disabled={busy || !positionPairAllowed}
                     onClick={() => addPositionRule()}
                     title="Save this pair without advancing"
                   >
@@ -4022,10 +4067,10 @@ function App() {
                 </div>
                 {positionRules.length ? (
                   <div className="rule-list">
-                    {positionRules.map((rule, index) => (
+                    {positionRules.map((rule) => (
                       <div className="rule-row position-rule-row" key={makeRuleKey(rule)}>
                         <span>{formatPositionRule(rule, traitOptionMap)}</span>
-                        <button type="button" disabled={busy} aria-label={`Remove position rule ${formatPositionRule(rule, traitOptionMap)}`} onClick={() => removePositionRule(index)}>
+                        <button type="button" disabled={busy} aria-label={`Remove position rule ${formatPositionRule(rule, traitOptionMap)}`} onClick={() => removePositionRule(makeRuleKey(rule))}>
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -4462,8 +4507,7 @@ function ManagerRuleTraitPreview({ url, label }) {
 }
 
 function buildProjectBackup(source, project, savedAt = new Date().toISOString()) {
-  const psdOneOfOneFolderIndex = source.psdOneOfOneFolder
-    ? Math.min(source.psdOneOfOneFolder.index, source.categories.length) : null
+  const psdOneOfOneFolderIndices = getPsdOneOfOneFolderIndices(source)
   const oneOfOnes = source.oneOfOnes
   source = restorePsdOneOfOneFolder(source)
   source = { ...source, oneOfOnes }
@@ -4496,7 +4540,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
     savedAt,
     project,
     source: {
-      psdOneOfOneFolderIndex,
+      psdOneOfOneFolderIndices,
       type: source.type,
       name: source.name,
       width: source.width,
@@ -4640,14 +4684,19 @@ function restoreProjectBackup(source, backup) {
     })),
     categoryConflicts: backup.source.categoryConflicts || [],
   }
-  if (Number.isInteger(backup.source.psdOneOfOneFolderIndex)) {
-    restoredSource = selectPsdOneOfOneFolder(restoredSource, backup.source.psdOneOfOneFolderIndex)
+  const folderIndices = backup.source.psdOneOfOneFolderIndices
+    ?? (Number.isInteger(backup.source.psdOneOfOneFolderIndex) ? [backup.source.psdOneOfOneFolderIndex] : [])
+  if (!Array.isArray(folderIndices) || folderIndices.some((index) => !Number.isInteger(index) || !backup.source.categories[index])) {
+    throw new Error('The backup contains an invalid 1/1 folder selection.')
+  }
+  if (folderIndices.length) {
+    restoredSource = selectPsdOneOfOneFolders(restoredSource, folderIndices)
     const savedArtworks = (backup.source.oneOfOnes || []).map((artwork) => ({
       ...artwork,
       id: artwork.id?.startsWith('psd-one-of-one::')
         ? `psd-one-of-one::${remapTraitId(artwork.id.slice('psd-one-of-one::'.length))}` : artwork.id,
     }))
-    const backedUpTraitIds = new Set(backup.source.categories[backup.source.psdOneOfOneFolderIndex].traits.map((trait) => remapTraitId(trait.id)))
+    const backedUpTraitIds = new Set(folderIndices.flatMap((index) => backup.source.categories[index].traits.map((trait) => remapTraitId(trait.id))))
     restoredSource.oneOfOnes = restoredSource.oneOfOnes.filter((artwork) => !artwork.psdFolderArtwork || !backedUpTraitIds.has(artwork.trait.id) || savedArtworks.some((saved) => saved.id === artwork.id)).map((artwork) => {
       const saved = savedArtworks.find((candidate) => candidate.id === artwork.id)
       return saved ? { ...artwork, name: saved.name } : artwork

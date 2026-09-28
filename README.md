@@ -93,3 +93,9 @@ The collection preview shows up to 16 combinations at a time. Use **Next 16 samp
 
 Image composition runs in the browser. Large collections should be generated on
 a capable desktop browser because the work can require significant memory and CPU.
+
+## Edit rules with your own AI
+
+Load your artwork and click **Ask AI** to download a normal project backup with embedded instructions and supported rule examples. Give the JSON to your own AI tool with a request such as “Make Red Hat incompatible with Long Hair; preserve everything else.” Ask for the complete updated JSON file. No AI API, key, or integration is required, and the website does not send the file to an AI service.
+
+Keep an ordinary project backup before editing. With the same artwork loaded, use **Restore project backup** in Sources to import the returned JSON. The app validates rule references and position values before applying it, and AI backups show a rule change summary for confirmation. Review the trait manager and preview samples afterward. The backup contains names and settings, not artwork; provide labeled screenshots separately for visual advice.
