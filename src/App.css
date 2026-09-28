@@ -980,6 +980,12 @@ button:disabled {
   font-weight: 800;
 }
 
+.sample-preview-navigation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sample-preview-toolbar button {
   display: inline-flex;
   align-items: center;

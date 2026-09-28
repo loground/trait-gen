@@ -3195,14 +3195,16 @@ function App() {
             </header>
             <div className="sample-preview-toolbar">
               <span>{samplePreviews.length ? `Samples ${samplePreviewOffset + 1}–${samplePreviewOffset + samplePreviews.length}` : 'Preparing samples'}</span>
-              <button type="button" disabled={busy || gifBusy || samplePreviewOffset === 0} onClick={() => generateSamplePreview('previous')}>
-                <ArrowLeft size={16} />
-                Previous 16 samples
-              </button>
-              <button type="button" disabled={busy || gifBusy || !sampleHasMore} onClick={() => generateSamplePreview('next')}>
-                {busy ? <Loader2 className="spin" size={16} /> : <Shuffle size={16} />}
-                {busy ? 'Rendering samples…' : sampleHasMore ? 'Next 16 samples' : 'All samples shown'}
-              </button>
+              <div className="sample-preview-navigation">
+                <button type="button" disabled={busy || gifBusy || samplePreviewOffset === 0} onClick={() => generateSamplePreview('previous')}>
+                  <ArrowLeft size={16} />
+                  Previous 16 samples
+                </button>
+                <button type="button" disabled={busy || gifBusy || !sampleHasMore} onClick={() => generateSamplePreview('next')}>
+                  {busy ? <Loader2 className="spin" size={16} /> : <Shuffle size={16} />}
+                  {busy ? 'Rendering samples…' : sampleHasMore ? 'Next 16 samples' : 'All samples shown'}
+                </button>
+              </div>
             </div>
             {samplePreviews.length ? (
               <div className="sample-preview-grid">
