@@ -58,7 +58,7 @@ export function buildRandomCombination(categories, seed, index, rules = {}, bala
       : pickWeightedTrait(availableTraits, random)
     combo.push(selectedTrait)
   }
-  return combo
+  return rules.traitRequirements?.length && findCombinationViolation(combo, rules) ? [] : combo
 }
 
 export async function buildCombinationsUpTo(categories, rules = {}, limit = Number.POSITIVE_INFINITY) {
@@ -95,7 +95,7 @@ export async function buildCombinationsUpTo(categories, rules = {}, limit = Numb
 }
 
 export function countValidCombinations(categories, rules = {}, limit = Number.POSITIVE_INFINITY, timeBudgetMs = COMBO_COUNT_TIME_BUDGET_MS) {
-  if (!rules.incompatibilities?.length && !rules.traitCategoryConflicts?.length && !rules.categoryRequirements?.length && !rules.categoryConflicts?.length) {
+  if (!rules.incompatibilities?.length && !rules.traitCategoryConflicts?.length && !rules.categoryRequirements?.length && !rules.categoryConflicts?.length && !rules.traitRequirements?.length) {
     let orderedCycleLength = 1
     let mixedCombinationCount = 1
     for (const category of categories) {
@@ -144,7 +144,7 @@ export function countValidCombinations(categories, rules = {}, limit = Number.PO
 
   function countFrom(categoryIndex, combo) {
     if (exceededTimeBudget()) return 0
-    if (categoryIndex >= categories.length) return 1
+    if (categoryIndex >= categories.length) return rules.traitRequirements?.length && findCombinationViolation(combo, rules) ? 0 : 1
     const category = categories[categoryIndex]
     if (!shouldApply(category, combo)) {
       return countFrom(categoryIndex + 1, combo)

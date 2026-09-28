@@ -89,7 +89,7 @@ browser.
 
 Select multiple layered PSD files in the Sources picker, or drop them together, to combine their trait folders into one project. All PSDs must use the same canvas dimensions. Folders with matching names combine their traits; the first PSD containing root-level base layers supplies the base image. Files are read in selection order, and duplicate trait IDs are made unique. For large files, the importer decodes layer pixels as needed. Procreate files provide flattened previews, so export layered PSDs from Procreate for this workflow.
 
-The collection preview shows up to 16 combinations at a time. Use **Next 16 samples** to see the next unique batch. The sharing collage and GIF use the displayed batch; generate the GIF again to use another set of frames from that batch.
+The collection preview shows up to 16 combinations at a time. Use **Next 16 samples** and **Previous 16 samples** to navigate between batches. The sharing collage and GIF use the displayed batch; generate the GIF again to use another set of frames from that batch.
 
 Image composition runs in the browser. Large collections should be generated on
 a capable desktop browser because the work can require significant memory and CPU.
@@ -99,3 +99,11 @@ a capable desktop browser because the work can require significant memory and CP
 Load your artwork and click **Ask AI** to download a normal project backup with embedded instructions and supported rule examples. Give the JSON to your own AI tool with a request such as “Make Red Hat incompatible with Long Hair; preserve everything else.” Ask for the complete updated JSON file. No AI API, key, or integration is required, and the website does not send the file to an AI service.
 
 Keep an ordinary project backup before editing. With the same artwork loaded, use **Restore project backup** in Sources to import the returned JSON. The app validates rule references and position values before applying it, and AI backups show a rule change summary for confirmation. Review the trait manager and preview samples afterward. The backup contains names and settings, not artwork; provide labeled screenshots separately for visual advice.
+
+Backups with required trait pairs use version 2. A `source.traitRequirements`
+entry `{ "trait": "<trigger ID>", "requiredTrait": "<required ID>" } means
+selecting the trigger requires the other trait to be present; None does not
+satisfy it. Requirements are one-way, are checked regardless of render order,
+and can be reviewed or removed in the Trait Rules panel. Version 1 backups
+remain supported. Earlier app versions reject version 2 rather than silently
+ignoring these requirements.

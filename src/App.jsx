@@ -5,6 +5,7 @@ import { GIFEncoder, applyPalette, quantize } from 'gifenc'
 import {
   Archive,
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   Ban,
   CheckCircle2,
@@ -1379,6 +1380,7 @@ function App() {
       traitCategoryConflicts: (source.traitCategoryConflicts || []).filter((rule) => rule.trait !== traitKey),
       positionRules: (source.positionRules || []).filter((rule) => rule.first !== traitKey && rule.second !== traitKey),
       categoryRequirements: (source.categoryRequirements || []).filter((rule) => rule.requiredTrait !== traitKey),
+      traitRequirements: (source.traitRequirements || []).filter((rule) => rule.trait !== traitKey && rule.requiredTrait !== traitKey),
     }
     const nextTraitIndex = Math.min(traitIndex, Math.max(0, categories[categoryIndex].traits.length - 1))
     setSource(nextSource)
@@ -2021,7 +2023,11 @@ function App() {
     }
   }
 
-  async function generateSamplePreview(nextBatch = false) {
+  async function generateSamplePreview(direction = 'initial') {
+    const navigating = direction !== 'initial'
+    if (busy || gifBusy) return
+    if (direction === 'previous' && samplePreviewOffset === 0) return
+    if (direction === 'next' && !sampleHasMore) return
     if (!(await ensureHolderAccess())) return
     if (!source?.categories?.length || busy) {
       setStatus('Load a PSD or folder set first.')
@@ -2035,7 +2041,7 @@ function App() {
       return
     }
 
-    const validCombinationInfo = nextBatch && sampleCombinationInfoRef.current
+    const validCombinationInfo = navigating && sampleCombinationInfoRef.current
       ? sampleCombinationInfoRef.current
       : countValidCombinations(activeCategories, rules, COMBO_COUNT_DISPLAY_LIMIT)
     if (!validCombinationInfo.count && !validCombinationInfo.approximate) {
@@ -2043,13 +2049,14 @@ function App() {
       return
     }
 
-    const offset = nextBatch ? samplePreviewOffset + samplePreviews.length : 0
+    const offset = direction === 'previous'
+      ? Math.max(0, samplePreviewOffset - PREVIEW_BATCH_SIZE)
+      : direction === 'next' ? samplePreviewOffset + samplePreviews.length : 0
     const requestedCount = validCombinationInfo.approximate || validCombinationInfo.capped
       ? offset + PREVIEW_BATCH_SIZE + 1
       : Math.min(validCombinationInfo.count, offset + PREVIEW_BATCH_SIZE + 1)
     const previewAttemptLimit = Math.min(20_000, Math.max(1_000, validCombinationInfo.count * 50))
-    if (nextBatch && !sampleHasMore) return
-    if (!nextBatch) {
+    if (!navigating) {
       clearSamplePreviews()
       sampleCombinationInfoRef.current = validCombinationInfo
     }
@@ -2102,7 +2109,7 @@ function App() {
       setStatus(`Preview ready: samples ${offset + 1}–${offset + previews.length} use the current seed, rarities, and trait rules.`)
     } catch (error) {
       createdUrls.forEach((url) => URL.revokeObjectURL(url))
-      if (!nextBatch) setSamplePreviewOpen(false)
+      if (!navigating) setSamplePreviewOpen(false)
       setStatus(getErrorMessage(error, 'Could not render sample artworks.'))
     } finally {
       setBusy(false)
@@ -3188,9 +3195,13 @@ function App() {
             </header>
             <div className="sample-preview-toolbar">
               <span>{samplePreviews.length ? `Samples ${samplePreviewOffset + 1}–${samplePreviewOffset + samplePreviews.length}` : 'Preparing samples'}</span>
-              <button type="button" disabled={busy || gifBusy || !sampleHasMore} onClick={() => generateSamplePreview(true)}>
+              <button type="button" disabled={busy || gifBusy || samplePreviewOffset === 0} onClick={() => generateSamplePreview('previous')}>
+                <ArrowLeft size={16} />
+                Previous 16 samples
+              </button>
+              <button type="button" disabled={busy || gifBusy || !sampleHasMore} onClick={() => generateSamplePreview('next')}>
                 {busy ? <Loader2 className="spin" size={16} /> : <Shuffle size={16} />}
-                {busy ? 'Rendering next batch…' : sampleHasMore ? 'Next 16 samples' : 'All samples shown'}
+                {busy ? 'Rendering samples…' : sampleHasMore ? 'Next 16 samples' : 'All samples shown'}
               </button>
             </div>
             {samplePreviews.length ? (
@@ -3821,6 +3832,19 @@ function App() {
                     ))}
                   </div>
                 ) : <p className="manager-empty">No trait-pair rules yet.</p>}
+                {!!source?.traitRequirements?.length && (
+                  <div className="rule-list">
+                    <h4>Required trait pairs</h4>
+                    {source.traitRequirements.map((rule, index) => (
+                      <div className="rule-row" key={`${rule.trait}-${rule.requiredTrait}`}>
+                        <span>{formatTraitKey(rule.trait, traitOptionMap)} requires {formatTraitKey(rule.requiredTrait, traitOptionMap)}</span>
+                        <button type="button" disabled={busy} aria-label="Remove required trait pair" onClick={() => {
+                          setSource((current) => ({ ...current, traitRequirements: current.traitRequirements.filter((_, i) => i !== index) }))
+                        }}><Trash2 size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </section>
               )}
 
@@ -4554,7 +4578,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
       }))
 
   return {
-    version: 1,
+    version: source.traitRequirements?.length ? 2 : 1,
     savedAt,
     project,
     source: {
@@ -4587,6 +4611,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
       })),
       traitCategoryConflicts: (source.traitCategoryConflicts || []).map((rule) => ({ ...rule })),
       positionRules: (source.positionRules || []).map((rule) => ({ ...rule })),
+      traitRequirements: source.traitRequirements || [],
       categoryRequirements: source.categoryRequirements || [],
       categoryConflicts: source.categoryConflicts || [],
       oneOfOnes: (source.oneOfOnes || []).map((artwork) => ({
@@ -4601,7 +4626,7 @@ function buildProjectBackup(source, project, savedAt = new Date().toISOString())
 
 function restoreProjectBackup(source, backup) {
   source = restorePsdOneOfOneFolder(source)
-  if (backup?.version !== 1 || !backup.source?.categories?.length) {
+  if (![1, 2].includes(backup?.version) || !backup.source?.categories?.length) {
     throw new Error('This is not a supported Trait Forge project backup.')
   }
   if (backup.source.type !== source.type) {
@@ -4700,6 +4725,7 @@ function restoreProjectBackup(source, backup) {
       ...rule,
       requiredTrait: remapTraitId(rule.requiredTrait),
     })),
+    traitRequirements: (backup.source.traitRequirements || []).map((rule) => ({ trait: remapTraitId(rule.trait), requiredTrait: remapTraitId(rule.requiredTrait) })),
     categoryConflicts: backup.source.categoryConflicts || [],
   }
   const folderIndices = backup.source.psdOneOfOneFolderIndices
@@ -4733,12 +4759,15 @@ function restoreProjectBackup(source, backup) {
     skippedTraitCount: restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
       backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
     ruleCount: incompatibilities.length + traitCategoryConflicts.length + positionRules.length +
-      (backup.source.categoryRequirements || []).length + (backup.source.categoryConflicts || []).length,
+      (backup.source.categoryRequirements || []).length + (backup.source.categoryConflicts || []).length + (backup.source.traitRequirements || []).length,
   }
 }
 
 function findInvalidRuleReference(source) {
   const traitIds = new Set(source.categories.flatMap((category) => category.traits.map((trait) => getTraitId(trait))))
+  for (const rule of source.traitRequirements || []) {
+    if (!traitIds.has(rule.trait) || !traitIds.has(rule.requiredTrait)) return "The backup contains a required trait that does not match the loaded source."
+  }
   for (const rule of source.incompatibilities || []) {
     if (!traitIds.has(rule.first) || !traitIds.has(rule.second)) {
       return 'The backup contains an incompatibility rule that does not match the loaded source.'
@@ -5124,6 +5153,7 @@ function formatCsvCell(value) {
 function getSourceRules(source) {
   return {
     incompatibilities: source?.incompatibilities || [],
+    traitRequirements: source?.traitRequirements || [],
     traitCategoryConflicts: source?.traitCategoryConflicts || [],
     categoryRequirements: source?.categoryRequirements || [],
     categoryConflicts: source?.categoryConflicts || [],

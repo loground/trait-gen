@@ -50,6 +50,7 @@ export function selectPsdOneOfOneFolders(source, indices) {
         psdFolderArtwork: true, trait, width: source.width, height: source.height,
       })))],
     incompatibilities: (restored.incompatibilities || []).filter(pairAllowed),
+    traitRequirements: (restored.traitRequirements || []).filter((rule) => !ids.has(rule.trait) && !ids.has(rule.requiredTrait)),
     positionRules: (restored.positionRules || []).filter(pairAllowed),
     traitCategoryConflicts: (restored.traitCategoryConflicts || []).filter((rule) => !ids.has(rule.trait) && !names.has(rule.category)),
     categoryRequirements: (restored.categoryRequirements || []).filter((rule) => !ids.has(rule.requiredTrait) && !names.has(rule.category)),

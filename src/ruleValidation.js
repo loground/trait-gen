@@ -9,6 +9,12 @@ function getTraitName(trait) {
 }
 
 export function findCombinationViolation(combo, rules = {}) {
+  const selectedIds = new Set(combo.filter((trait) => !trait.isNone).map(getTraitId))
+  for (const rule of rules.traitRequirements || []) {
+    if (selectedIds.has(rule.trait) && !selectedIds.has(rule.requiredTrait)) {
+      return `${rule.trait} requires ${rule.requiredTrait}.`
+    }
+  }
   for (const rule of rules.traitCategoryConflicts || []) {
     const blockedTrait = combo.find((trait) => !trait.isNone && getTraitId(trait) === rule.trait)
     const blockedCategoryApplied = combo.some((trait) => !trait.isNone && trait.category === rule.category)
