@@ -57,7 +57,7 @@ test('matches a backed-up folder by identity instead of its old array index', ()
   assert.equal(matchBackupCategory([extra, eyes], backupEyes), eyes)
 })
 
-test('refuses to shift backup data onto a missing trait', () => {
+test('skips a missing backup trait instead of shifting its data', () => {
   const currentTraits = [
     { id: 'alpha', originalName: 'Alpha.png' },
     { id: 'new-extra', originalName: 'Extra.png' },
@@ -67,21 +67,21 @@ test('refuses to shift backup data onto a missing trait', () => {
     { id: 'old-beta', originalName: 'Beta.png' },
   ]
 
-  assert.throws(
-    () => matchBackupTraits(currentTraits, backupTraits),
-    /Could not safely match 1 backed-up trait: Beta\.png/,
-  )
+  const result = matchBackupTraits(currentTraits, backupTraits)
+  assert.deepEqual(result.matches, [currentTraits[0], null])
+  assert.deepEqual(result.unmatchedBackupTraits, [backupTraits[1]])
+  assert.deepEqual(result.extras, [currentTraits[1]])
 })
 
-test('refuses an ambiguous filename instead of assigning names by order', () => {
+test('skips an ambiguous filename instead of assigning names by order', () => {
   const currentTraits = [
     { id: 'first-copy', originalName: 'Same.png' },
     { id: 'second-copy', originalName: 'Same.png' },
   ]
   const backupTraits = [{ id: 'old-copy', originalName: 'Same.png' }]
 
-  assert.throws(
-    () => matchBackupTraits(currentTraits, backupTraits),
-    /Could not safely match 1 backed-up trait: Same\.png/,
-  )
+  const result = matchBackupTraits(currentTraits, backupTraits)
+  assert.deepEqual(result.matches, [null])
+  assert.deepEqual(result.unmatchedBackupTraits, backupTraits)
+  assert.deepEqual(result.extras, currentTraits)
 })

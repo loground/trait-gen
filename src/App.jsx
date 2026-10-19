@@ -2364,10 +2364,13 @@ function App() {
           setFolderConflictDraft(emptyFolderConflictDraft)
           setTraitCategoryConflictDraft(emptyTraitCategoryConflictDraft)
           await renderPreview(restored.source)
-          const skippedMessage = restored.skippedTraitCount
-            ? ` Left ${restored.skippedTraitCount} new ${restored.skippedTraitCount === 1 ? 'trait' : 'traits'} unchanged.`
+          const newTraitsMessage = restored.newTraitCount
+            ? ` Left ${restored.newTraitCount} new ${restored.newTraitCount === 1 ? 'trait' : 'traits'} unchanged.`
             : ''
-          setStatus(`Restored settings for ${restored.traitCount} traits and ${restored.ruleCount} rules from ${file.name}.${skippedMessage}`)
+          const unmatchedMessage = restored.unmatchedTraitNames.length
+            ? ` Warning: skipped ${restored.unmatchedTraitNames.length} unmatched backed-up ${restored.unmatchedTraitNames.length === 1 ? 'trait' : 'traits'} (${restored.unmatchedTraitNames.slice(0, 3).join(', ')}${restored.unmatchedTraitNames.length > 3 ? ` and ${restored.unmatchedTraitNames.length - 3} more` : ''}) and any rules that used them.`
+            : ''
+          setStatus(`Restored settings for ${restored.traitCount} traits and ${restored.ruleCount} rules from ${file.name}.${newTraitsMessage}${unmatchedMessage}`)
         } catch (error) {
           setStatus(getErrorMessage(error, 'Could not restore that project backup.'))
         } finally {
@@ -4639,23 +4642,20 @@ function restoreProjectBackup(source, backup) {
   const restoredCategoryByCurrentCategory = new Map()
   const restoredCategoriesInBackupOrder = []
   const restoredIdByBackupId = new Map()
+  const unmatchedBackupTraits = []
 
   for (const backupCategory of backup.source.categories) {
     const currentCategory = matchBackupCategory([...unusedCategories], backupCategory, getTraitId)
     if (!currentCategory) {
       throw new Error(`Could not match the backed-up group "${backupCategory.name}" to the loaded source.`)
     }
-    if (currentCategory.traits.length < backupCategory.traits.length) {
-      throw new Error(
-        `Group "${backupCategory.name}" has ${currentCategory.traits.length} loaded traits but the backup expects ${backupCategory.traits.length}.`,
-      )
-    }
-
     unusedCategories.delete(currentCategory)
-    const { matches, extras } = matchBackupTraits(currentCategory.traits, backupCategory.traits, getTraitId)
+    const { matches, extras, unmatchedBackupTraits: unmatched } = matchBackupTraits(currentCategory.traits, backupCategory.traits, getTraitId)
+    unmatchedBackupTraits.push(...unmatched)
     const restoredTraitByCurrentTrait = new Map()
     backupCategory.traits.forEach((backupTrait, traitIndex) => {
       const currentTrait = matches[traitIndex]
+      if (!currentTrait) return
       restoredIdByBackupId.set(backupTrait.id, getTraitId(currentTrait))
       const restoredTrait = {
         ...currentTrait,
@@ -4693,15 +4693,21 @@ function restoreProjectBackup(source, backup) {
   )
 
   const remapTraitId = (id) => restoredIdByBackupId.get(id) || id
-  const incompatibilities = (backup.source.incompatibilities || []).map((rule) => ({
+  const restoredTraitIds = new Set(restoredCategories.flatMap((category) => category.traits.map((trait) => getTraitId(trait))))
+  const hasRestoredTrait = (id) => restoredTraitIds.has(remapTraitId(id))
+  const incompatibilities = (backup.source.incompatibilities || []).filter((rule) => (
+    hasRestoredTrait(rule.first) && hasRestoredTrait(rule.second)
+  )).map((rule) => ({
     first: remapTraitId(rule.first),
     second: remapTraitId(rule.second),
   }))
-  const traitCategoryConflicts = (backup.source.traitCategoryConflicts || []).map((rule) => ({
+  const traitCategoryConflicts = (backup.source.traitCategoryConflicts || []).filter((rule) => hasRestoredTrait(rule.trait)).map((rule) => ({
     trait: remapTraitId(rule.trait),
     category: rule.category,
   }))
-  const positionRules = (backup.source.positionRules || []).map((rule) => ({
+  const positionRules = (backup.source.positionRules || []).filter((rule) => (
+    hasRestoredTrait(rule.first) && hasRestoredTrait(rule.second)
+  )).map((rule) => ({
     first: remapTraitId(rule.first),
     second: remapTraitId(rule.second),
     firstOffsetX: Math.round(Number(rule.firstOffsetX) || 0),
@@ -4710,6 +4716,18 @@ function restoreProjectBackup(source, backup) {
     secondOffsetX: Math.round(Number(rule.secondOffsetX) || 0),
     secondOffsetY: Math.round(Number(rule.secondOffsetY) || 0),
     secondScale: normalizeRuleScale(rule.secondScale),
+  }))
+  const categoryRequirements = (backup.source.categoryRequirements || []).filter((rule) => (
+    hasRestoredTrait(rule.requiredTrait)
+  )).map((rule) => ({
+    ...rule,
+    requiredTrait: remapTraitId(rule.requiredTrait),
+  }))
+  const traitRequirements = (backup.source.traitRequirements || []).filter((rule) => (
+    hasRestoredTrait(rule.trait) && hasRestoredTrait(rule.requiredTrait)
+  )).map((rule) => ({
+    trait: remapTraitId(rule.trait),
+    requiredTrait: remapTraitId(rule.requiredTrait),
   }))
   let restoredSource = {
     ...source,
@@ -4723,11 +4741,8 @@ function restoreProjectBackup(source, backup) {
     incompatibilities,
     traitCategoryConflicts,
     positionRules,
-    categoryRequirements: (backup.source.categoryRequirements || []).map((rule) => ({
-      ...rule,
-      requiredTrait: remapTraitId(rule.requiredTrait),
-    })),
-    traitRequirements: (backup.source.traitRequirements || []).map((rule) => ({ trait: remapTraitId(rule.trait), requiredTrait: remapTraitId(rule.requiredTrait) })),
+    categoryRequirements,
+    traitRequirements,
     categoryConflicts: backup.source.categoryConflicts || [],
   }
   const folderIndices = backup.source.psdOneOfOneFolderIndices
@@ -4757,11 +4772,12 @@ function restoreProjectBackup(source, backup) {
   return {
     project: restoredProject,
     source: restoredSource,
-    traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
-    skippedTraitCount: restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
-      backup.source.categories.reduce((total, category) => total + category.traits.length, 0),
+    traitCount: backup.source.categories.reduce((total, category) => total + category.traits.length, 0) - unmatchedBackupTraits.length,
+    newTraitCount: restoredCategories.reduce((total, category) => total + category.traits.length, 0) -
+      (backup.source.categories.reduce((total, category) => total + category.traits.length, 0) - unmatchedBackupTraits.length),
+    unmatchedTraitNames: unmatchedBackupTraits.map((trait) => trait.originalName || trait.name || trait.id || 'Unknown trait'),
     ruleCount: incompatibilities.length + traitCategoryConflicts.length + positionRules.length +
-      (backup.source.categoryRequirements || []).length + (backup.source.categoryConflicts || []).length + (backup.source.traitRequirements || []).length,
+      categoryRequirements.length + (backup.source.categoryConflicts || []).length + traitRequirements.length,
   }
 }
 

@@ -40,16 +40,12 @@ export function matchBackupTraits(currentTraits, backupTraits, getTraitId = (tra
     getCurrentTraitName(currentTrait) === getBackupTraitName(backupTrait)
   ))
 
-  const unmatchedNames = backupTraits
-    .filter((_, index) => !matches[index])
-    .map((trait) => trait.originalName || trait.name || trait.id || 'Unknown trait')
-  if (unmatchedNames.length) {
-    const examples = unmatchedNames.slice(0, 3).join(', ')
-    const remainder = unmatchedNames.length > 3 ? ` and ${unmatchedNames.length - 3} more` : ''
-    throw new Error(`Could not safely match ${unmatchedNames.length} backed-up ${unmatchedNames.length === 1 ? 'trait' : 'traits'}: ${examples}${remainder}. Check that the original files are still present and uniquely named.`)
+  const unmatchedBackupTraits = backupTraits.filter((_, index) => !matches[index])
+  return {
+    matches,
+    extras: currentTraits.filter((trait) => unusedTraits.has(trait)),
+    unmatchedBackupTraits,
   }
-
-  return { matches, extras: currentTraits.filter((trait) => unusedTraits.has(trait)) }
 }
 
 function assignUniqueMatches(matches, unusedTraits, backupTraits, isMatch) {
