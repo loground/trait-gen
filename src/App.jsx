@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { decodeLayerPixels, getLayerCanvas, readPsd } from 'ag-psd'
-import JSZip from 'jszip'
 import { GIFEncoder, applyPalette, quantize } from 'gifenc'
 import {
   Archive,
@@ -44,10 +43,12 @@ import { togglePreviewTraitKeys } from './traitPreview.js'
 import { mergePsdSources } from './psdMerge.js'
 import { restorePsdOneOfOneFolder, selectPsdOneOfOneFolders, getPsdOneOfOneFolderIndices } from './psdOneOfOnes.js'
 import { PREVIEW_BATCH_SIZE, selectGifFrameIndexes, selectPreviewPage } from './previewPagination.js'
+import { createStoredZip } from './storedZip.js'
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const LARGE_PSD_WARNING_SIZE = 100 * 1024 * 1024
 const RETAINED_PSD_BITMAP_LIMIT = 512 * 1024 * 1024
+const GENERATION_LAYER_CACHE_LIMIT = 128 * 1024 * 1024
 const COMBO_COUNT_DISPLAY_LIMIT = 1000000
 const METADATA_FILE_NAME = 'metadata-file.csv'
 const ONE_OF_ONE_TRAIT_TYPE = '1/1'
@@ -2151,9 +2152,11 @@ function App() {
     setLastZipName('')
     setBusy(true)
     setStatus(`Selecting and validating ${targetCount} editions...`)
+    const generationLayerCache = source.type === 'psd' && source.lowMemoryMode
+      ? createPsdLayerCanvasCache(GENERATION_LAYER_CACHE_LIMIT)
+      : null
     try {
-      const zip = new JSZip()
-      const images = zip.folder('images')
+      const zipEntries = []
       const oneOfOnes = source.oneOfOnes || []
       const metadataCategories = [
         ...activeCategories.map((category) => category.name),
@@ -2177,10 +2180,10 @@ function App() {
 
       const generatedAt = new Date().toISOString()
       const projectBackup = buildProjectBackup(source, project, generatedAt)
-      zip.file('project-backup.json', JSON.stringify(projectBackup, null, 2))
-      zip.file(
-        'generation-report.json',
-        JSON.stringify(
+      zipEntries.push({ name: 'project-backup.json', data: JSON.stringify(projectBackup, null, 2) })
+      zipEntries.push({
+        name: 'generation-report.json',
+        data: JSON.stringify(
           {
             generatedAt,
             requestedEditions: targetCount,
@@ -2204,7 +2207,7 @@ function App() {
           null,
           2,
         ),
-      )
+      })
 
       for (let index = 0; index < combos.length; index += 1) {
         const edition = index + 1
@@ -2218,6 +2221,7 @@ function App() {
           maxDimension,
           canvasRatio,
           canvasFit: project.canvasFit,
+          layerCanvasCache: generationLayerCache,
         })
         const imageFileName = `${edition}.${output.extension}`
         const attributes = combos[index]
@@ -2226,7 +2230,7 @@ function App() {
             trait_type: trait.category,
             value: getTraitMetadataName(trait),
           }))
-        images.file(imageFileName, blob)
+        zipEntries.push({ name: `images/${imageFileName}`, data: blob })
         const tokenId = index + 1
         metadataRows.push(buildMetadataCsvRow(tokenId, imageFileName, project, metadataCategories, combos[index]))
         manifest.push({ edition, tokenId, image: `images/${imageFileName}`, metadata: METADATA_FILE_NAME, attributes })
@@ -2253,7 +2257,7 @@ function App() {
           { trait_type: ONE_OF_ONE_TRAIT_TYPE, value: oneOfOneName },
           { trait_type: RARITY_TRAIT_TYPE, value: ONE_OF_ONE_TRAIT_TYPE },
         ]
-        images.file(imageFileName, blob)
+        zipEntries.push({ name: `images/${imageFileName}`, data: blob })
         metadataRows.push(buildOneOfOneMetadataCsvRow(edition, imageFileName, project, metadataCategories, oneOfOneName))
         manifest.push({
           edition,
@@ -2267,29 +2271,24 @@ function App() {
         await waitForPaint()
       }
 
-      zip.file(METADATA_FILE_NAME, buildMetadataCsv(metadataCategories, metadataRows))
-      zip.file('manifest.json', JSON.stringify(manifest, null, 2))
+      zipEntries.push({ name: METADATA_FILE_NAME, data: buildMetadataCsv(metadataCategories, metadataRows) })
+      zipEntries.push({ name: 'manifest.json', data: JSON.stringify(manifest, null, 2) })
       setStatus('Packaging ZIP… 0%')
       await waitForPaint()
       let lastPackagingPercent = -1
       let lastPackagingUpdate = 0
-      const zipBlob = await zip.generateAsync(
-        {
-          type: 'blob',
-          streamFiles: true,
-          // PNG, JPEG and WebP data is already compressed. Deflating it again is
-          // expensive and can make large exports appear frozen on mobile Safari.
-          compression: 'STORE',
-        },
-        ({ percent }) => {
-          const nextPercent = Math.min(100, Math.floor(percent))
+      const zipBlob = await createStoredZip(zipEntries, {
+        onProgress: ({ processedBytes, totalBytes, fileIndex, fileCount }) => {
+          const nextPercent = totalBytes > 0
+            ? Math.min(100, Math.floor((processedBytes / totalBytes) * 100))
+            : Math.min(100, Math.floor((fileIndex / fileCount) * 100))
           const now = Date.now()
           if (nextPercent === lastPackagingPercent || (nextPercent < 100 && now - lastPackagingUpdate < 200)) return
           lastPackagingPercent = nextPercent
           lastPackagingUpdate = now
           setStatus(`Packaging ZIP… ${nextPercent}%`)
         },
-      )
+      })
       const zipUrl = URL.createObjectURL(zipBlob)
       const zipName = `${slugify(project.name)}-nft-drop.zip`
       setLastZipUrl((current) => {
@@ -2304,6 +2303,7 @@ function App() {
     } catch (error) {
       setStatus(getErrorMessage(error, 'Generation failed.'))
     } finally {
+      generationLayerCache?.clear()
       setBusy(false)
     }
   }
@@ -4951,32 +4951,21 @@ async function parseFolders(files, baseFile) {
 }
 
 async function renderArtwork(source, traits, options = {}) {
-  const renderLimit = Number(options.renderMaxDimension) || 0
   const includeBase = options.includeBase !== false
-  const longestSourceSide = Math.max(source.width, source.height)
-  const renderScale = renderLimit && longestSourceSide > renderLimit ? renderLimit / longestSourceSide : 1
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(source.width * renderScale))
-  canvas.height = Math.max(1, Math.round(source.height * renderScale))
-  const context = canvas.getContext('2d')
-  context.clearRect(0, 0, canvas.width, canvas.height)
-  if (renderScale !== 1) {
-    context.imageSmoothingEnabled = true
-    context.imageSmoothingQuality = 'high'
-    context.scale(renderScale, renderScale)
-  }
+  const { canvas, context } = createDirectRenderCanvas(source.width, source.height, options)
+  const layerCanvasCache = options.layerCanvasCache || null
   const positionOverrides = getPairPositionOverrides(traits, source.positionRules)
 
   if (source.type === 'psd') {
     if (includeBase) {
       for (const layer of [...source.baseLayers].reverse()) {
-        drawPsdLayer(context, layer)
+        drawPsdLayer(context, layer, 0, 0, layerCanvasCache)
       }
     }
     for (const trait of traits) {
       if (trait.isNone) continue
       const position = positionOverrides.get(getTraitId(trait)) || { x: getTraitOffset(trait, 'x'), y: getTraitOffset(trait, 'y'), scale: 1 }
-      drawTraitArtwork(context, trait, position, source)
+      drawTraitArtwork(context, trait, position, source, layerCanvasCache)
     }
   } else {
     if (includeBase && source.baseImage) context.drawImage(source.baseImage, 0, 0, source.width, source.height)
@@ -4987,19 +4976,52 @@ async function renderArtwork(source, traits, options = {}) {
     }
   }
 
-  const exportCanvas = prepareCanvasForExport(canvas, options)
   try {
-    return await canvasToBlob(exportCanvas, options.mime || 'image/png', options.quality)
+    return await canvasToBlob(canvas, options.mime || 'image/png', options.quality)
   } finally {
     // Resetting a canvas immediately releases its backing store in Safari. This
     // keeps thousands of sequential renders from accumulating GPU memory.
-    if (exportCanvas !== canvas) {
-      exportCanvas.width = 0
-      exportCanvas.height = 0
-    }
     canvas.width = 0
     canvas.height = 0
   }
+}
+
+function createDirectRenderCanvas(sourceWidth, sourceHeight, options = {}) {
+  const sourceLongestSide = Math.max(sourceWidth, sourceHeight)
+  const previewLimit = Number(options.renderMaxDimension) || 0
+  const exportLimit = Number(options.maxDimension) || 0
+  const longestSide = Math.min(
+    sourceLongestSide,
+    previewLimit || sourceLongestSide,
+    exportLimit || sourceLongestSide,
+  )
+  const canvasRatio = Number(options.canvasRatio) || 0
+  const outputWidth = canvasRatio > 0
+    ? canvasRatio >= 1 ? longestSide : longestSide * canvasRatio
+    : sourceWidth * (longestSide / sourceLongestSide)
+  const outputHeight = canvasRatio > 0
+    ? canvasRatio >= 1 ? longestSide / canvasRatio : longestSide
+    : sourceHeight * (longestSide / sourceLongestSide)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(outputWidth))
+  canvas.height = Math.max(1, Math.round(outputHeight))
+  const context = canvas.getContext('2d')
+  context.clearRect(0, 0, canvas.width, canvas.height)
+  if (options.mime === 'image/jpeg') {
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+  }
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  const fit = options.canvasFit === 'contain' ? 'contain' : 'cover'
+  const scale = canvasRatio > 0
+    ? fit === 'contain'
+      ? Math.min(canvas.width / sourceWidth, canvas.height / sourceHeight)
+      : Math.max(canvas.width / sourceWidth, canvas.height / sourceHeight)
+    : canvas.width / sourceWidth
+  context.translate((canvas.width - sourceWidth * scale) / 2, (canvas.height - sourceHeight * scale) / 2)
+  context.scale(scale, scale)
+  return { canvas, context }
 }
 
 function getPairPositionOverrides(traits, positionRules = []) {
@@ -5021,7 +5043,7 @@ function getPairPositionOverrides(traits, positionRules = []) {
   return overrides
 }
 
-function drawTraitArtwork(context, trait, position, source) {
+function drawTraitArtwork(context, trait, position, source, layerCanvasCache = null) {
   const scale = Number.isFinite(position.scale) ? position.scale : 1
   context.save()
   context.translate(position.x + source.width / 2, position.y + source.height / 2)
@@ -5030,14 +5052,16 @@ function drawTraitArtwork(context, trait, position, source) {
   if (trait.type === 'image') {
     context.drawImage(trait.image, 0, 0, source.width, source.height)
   } else {
-    for (const layer of trait.layers) drawPsdLayer(context, layer)
+    for (const layer of trait.layers) drawPsdLayer(context, layer, 0, 0, layerCanvasCache)
   }
   context.restore()
 }
 
-function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
+function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0, layerCanvasCache = null) {
   if (!hasRenderableCanvas(layer)) return
-  const canvas = layer.canvas || (layer.rawData ? getLayerCanvas(layer) : null)
+  const canvas = layer.canvas || (layer.rawData
+    ? layerCanvasCache?.get(layer, () => getLayerCanvas(layer)) || getLayerCanvas(layer)
+    : null)
   if (!canvas) return
   const opacity = typeof layer.opacity === 'number' ? layer.opacity : 1
   context.save()
@@ -5045,8 +5069,52 @@ function drawPsdLayer(context, layer, offsetX = 0, offsetY = 0) {
   context.drawImage(canvas, (layer.left || 0) + offsetX, (layer.top || 0) + offsetY)
   context.restore()
   if (!layer.canvas) {
-    canvas.width = 0
-    canvas.height = 0
+    if (layerCanvasCache) layerCanvasCache.release(layer, canvas)
+    else {
+      canvas.width = 0
+      canvas.height = 0
+    }
+  }
+}
+
+function createPsdLayerCanvasCache(maxBytes) {
+  const entries = new Map()
+  let retainedBytes = 0
+  return {
+    get(layer, createCanvas) {
+      const existing = entries.get(layer)
+      if (existing) {
+        entries.delete(layer)
+        entries.set(layer, existing)
+        return existing.canvas
+      }
+      const canvas = createCanvas()
+      const bytes = canvas ? canvas.width * canvas.height * 4 : 0
+      if (!canvas || !bytes || bytes > maxBytes) return canvas
+      while (retainedBytes + bytes > maxBytes && entries.size) {
+        const [oldestLayer, oldest] = entries.entries().next().value
+        entries.delete(oldestLayer)
+        retainedBytes -= oldest.bytes
+        oldest.canvas.width = 0
+        oldest.canvas.height = 0
+      }
+      entries.set(layer, { canvas, bytes })
+      retainedBytes += bytes
+      return canvas
+    },
+    release(layer, canvas) {
+      if (entries.get(layer)?.canvas === canvas) return
+      canvas.width = 0
+      canvas.height = 0
+    },
+    clear() {
+      for (const { canvas } of entries.values()) {
+        canvas.width = 0
+        canvas.height = 0
+      }
+      entries.clear()
+      retainedBytes = 0
+    },
   }
 }
 
